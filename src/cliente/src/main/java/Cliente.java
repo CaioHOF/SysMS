@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicLong;
 
 import org.msgpack.core.MessageBufferPacker;
 import org.msgpack.core.MessagePack;
@@ -21,6 +22,7 @@ import org.zeromq.ZMQ;
 public class Cliente {
     private static final int TIMEOUT_MS = 10000;
     private static final Random random = new Random();
+    private static final AtomicLong logicalClock = new AtomicLong();
 
     public static void main(String[] args) {
         String username = environment("BOT_NAME", "ana");
@@ -118,6 +120,8 @@ public class Cliente {
 
         Value response = MessagePack.newDefaultUnpacker(bytes).unpackValue();
         Map<Value, Value> fields = response.asMapValue().map();
+        long receivedClock = field(fields, "logical_clock").asIntegerValue().asLong();
+        logicalClock.updateAndGet(current -> Math.max(current, receivedClock));
         System.out.println("[" + endpoint + " -> " + username + "] recebido: " + response);
         if (!field(fields, "ok").asBooleanValue().getBoolean()) {
             throw new IOException(field(fields, "message").toString());
@@ -141,6 +145,8 @@ public class Cliente {
                 byte[] payload = subscriber.recv(0);
                 Map<Value, Value> publication = MessagePack.newDefaultUnpacker(payload)
                         .unpackValue().asMapValue().map();
+                long receivedClock = field(publication, "logical_clock").asIntegerValue().asLong();
+                logicalClock.updateAndGet(current -> Math.max(current, receivedClock));
                 long receivedAt = Instant.now().toEpochMilli();
                 System.out.println("[" + username + " recebeu] canal=#"
                         + field(publication, "channel").asStringValue().asString()
