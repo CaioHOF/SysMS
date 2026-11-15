@@ -9,10 +9,24 @@ import zmq
 
 SERVER_NAME = os.getenv("SERVER_NAME", "servidor")
 DATA_FILE = Path(os.getenv("DATA_FILE", "/dados/dados.json"))
+REF_URL = os.getenv("REF_URL", "tcp://ref:5560")
+LOGICAL_CLOCK = 0
+CLOCK_OFFSET = 0
+
+
+def next_clock():
+    global LOGICAL_CLOCK
+    LOGICAL_CLOCK += 1
+    return LOGICAL_CLOCK
+
+
+def observe_clock(received):
+    global LOGICAL_CLOCK
+    LOGICAL_CLOCK = max(LOGICAL_CLOCK, received)
 
 
 def timestamp():
-    return int(time.time() * 1000)
+    return int(time.time() * 1000) + CLOCK_OFFSET
 
 
 def empty_state():
@@ -43,7 +57,12 @@ def save_state(state):
 
 
 def response(ok, message, data=None):
-    result = {"ok": ok, "timestamp": timestamp(), "message": message}
+    result = {
+        "ok": ok,
+        "timestamp": timestamp(),
+        "logical_clock": next_clock(),
+        "message": message,
+    }
     if data is not None:
         result["data"] = data
     return result
@@ -55,6 +74,8 @@ def process_request(request, state, publisher):
 
     if not isinstance(request.get("timestamp"), int):
         return response(False, "A mensagem precisa conter um timestamp inteiro")
+    if not isinstance(request.get("logical_clock"), int):
+        return response(False, "A mensagem precisa conter o contador lógico")
 
     operation = request.get("op")
 
@@ -136,6 +157,7 @@ def process_request(request, state, publisher):
             "timestamp": request["timestamp"],
             "sent_at": request["timestamp"],
             "received_at": timestamp(),
+            "logical_clock": next_clock(),
         }
         topic = (channel_name + "\0").encode("utf-8")
         publisher.send_multipart(
@@ -152,16 +174,48 @@ def print_message(direction, message):
     print(f"[{SERVER_NAME}] {direction}: {readable_message}", flush=True)
 
 
+def ref_request(socket, operation, **fields):
+    request = {
+        "op": operation,
+        "name": SERVER_NAME,
+        "timestamp": timestamp(),
+        "logical_clock": next_clock(),
+    }
+    request.update(fields)
+    socket.send(msgpack.packb(request, use_bin_type=True))
+    reply = msgpack.unpackb(socket.recv(), raw=False)
+    observe_clock(reply["logical_clock"])
+    return reply
+
+
+def send_heartbeat(socket, rank):
+    global CLOCK_OFFSET
+    try:
+        reply = ref_request(socket, "heartbeat", rank=rank)
+        ref_time = reply["data"]["time"]
+        CLOCK_OFFSET = ref_time - int(time.time() * 1000)
+        print(f"[{SERVER_NAME}] heartbeat; rank={rank}; relógio sincronizado", flush=True)
+    except (zmq.error.Again, OSError, KeyError) as error:
+        print(f"[{SERVER_NAME}] falha no heartbeat: {error}", flush=True)
+
+
 def main():
     state = load_state()
     context = zmq.Context()
     socket = context.socket(zmq.REP)
     publisher = context.socket(zmq.PUB)
+    ref_socket = context.socket(zmq.REQ)
     socket.setsockopt(zmq.LINGER, 0)
     publisher.setsockopt(zmq.LINGER, 0)
+    ref_socket.setsockopt(zmq.LINGER, 0)
+    ref_socket.setsockopt(zmq.RCVTIMEO, 3000)
+    ref_socket.connect(REF_URL)
+    registration = ref_request(ref_socket, "rank")
+    rank = registration["data"]["rank"]
     socket.bind("tcp://*:5555")
     publisher.connect(os.getenv("PROXY_PUB_URL", "tcp://proxy:5557"))
-    print(f"[{SERVER_NAME}] aguardando mensagens na porta 5555", flush=True)
+    print(f"[{SERVER_NAME}] rank {rank}, aguardando mensagens na porta 5555", flush=True)
+    received_messages = 0
 
     try:
         while True:
@@ -169,6 +223,8 @@ def main():
             request = None
             try:
                 request = msgpack.unpackb(raw_message, raw=False)
+                if isinstance(request, dict) and isinstance(request.get("logical_clock"), int):
+                    observe_clock(request["logical_clock"])
                 print_message("recebido", request)
                 result = process_request(request, state, publisher)
             except (msgpack.UnpackException, ValueError, TypeError) as error:
@@ -179,9 +235,13 @@ def main():
                 save_state(state)
             print_message("enviado", result)
             socket.send(msgpack.packb(result, use_bin_type=True))
+            received_messages += 1
+            if received_messages % 10 == 0:
+                send_heartbeat(ref_socket, rank)
     finally:
         socket.close()
         publisher.close()
+        ref_socket.close()
         context.term()
 
 

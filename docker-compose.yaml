@@ -7,6 +7,13 @@ services:
       - "5557:5557"
       - "5558:5558"
 
+  ref:
+    build:
+      context: ./src/ref
+      dockerfile: Dockerfile
+    ports:
+      - "5560:5560"
+
   servidor1:
     build:
       context: ./src/servidor
@@ -15,12 +22,14 @@ services:
       SERVER_NAME: servidor1
       DATA_FILE: /dados/dados.json
       PROXY_PUB_URL: tcp://proxy:5557
+      REF_URL: tcp://ref:5560
     volumes:
       - dados_servidor1:/dados
     ports:
       - "5555:5555"
     depends_on:
       - proxy
+      - ref
 
   servidor2:
     build:
@@ -30,12 +39,14 @@ services:
       SERVER_NAME: servidor2
       DATA_FILE: /dados/dados.json
       PROXY_PUB_URL: tcp://proxy:5557
+      REF_URL: tcp://ref:5560
     volumes:
       - dados_servidor2:/dados
     ports:
       - "5556:5555"
     depends_on:
       - proxy
+      - ref
 
   cliente1:
     build:
