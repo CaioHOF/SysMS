@@ -1,4 +1,12 @@
 services:
+  proxy:
+    build:
+      context: ./src/proxy
+      dockerfile: Dockerfile
+    ports:
+      - "5557:5557"
+      - "5558:5558"
+
   servidor1:
     build:
       context: ./src/servidor
@@ -6,10 +14,14 @@ services:
     environment:
       SERVER_NAME: servidor1
       DATA_FILE: /dados/dados.json
+      PROXY_PUB_URL: tcp://proxy:5557
     volumes:
       - dados_servidor1:/dados
     ports:
       - "5555:5555"
+    depends_on:
+      - proxy
+
   servidor2:
     build:
       context: ./src/servidor
@@ -17,21 +29,26 @@ services:
     environment:
       SERVER_NAME: servidor2
       DATA_FILE: /dados/dados.json
+      PROXY_PUB_URL: tcp://proxy:5557
     volumes:
       - dados_servidor2:/dados
     ports:
       - "5556:5555"
+    depends_on:
+      - proxy
+
   cliente1:
     build:
       context: ./src/cliente
       dockerfile: Dockerfile
     environment:
       BOT_NAME: ana
-      CHANNEL_NAME: geral
       SERVER_URLS: tcp://servidor1:5555,tcp://servidor2:5555
+      PROXY_SUB_URL: tcp://proxy:5558
     depends_on:
       - servidor1
       - servidor2
+      - proxy
 
   cliente2:
     build:
@@ -39,12 +56,13 @@ services:
       dockerfile: Dockerfile
     environment:
       BOT_NAME: bruno
-      CHANNEL_NAME: estudos
       SERVER_URLS: tcp://servidor1:5555,tcp://servidor2:5555
+      PROXY_SUB_URL: tcp://proxy:5558
     depends_on:
       - servidor1
       - servidor2
       - cliente1
+      - proxy
 
 volumes:
   dados_servidor1:

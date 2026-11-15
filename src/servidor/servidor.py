@@ -16,7 +16,7 @@ def timestamp():
 
 
 def empty_state():
-    return {"users": [], "logins": [], "channels": []}
+    return {"users": [], "logins": [], "channels": [], "messages": [], "publications": []}
 
 
 def load_state():
@@ -30,6 +30,8 @@ def load_state():
     state.setdefault("users", [])
     state.setdefault("logins", [])
     state.setdefault("channels", [])
+    state.setdefault("messages", [])
+    state.setdefault("publications", [])
     return state
 
 
@@ -41,13 +43,13 @@ def save_state(state):
 
 
 def response(ok, message, data=None):
-    result = {"ok": ok, "timstamp": timestamp(), "message": message}
+    result = {"ok": ok, "timestamp": timestamp(), "message": message}
     if data is not None:
         result["data"] = data
     return result
 
 
-def process_request(request, state):
+def process_request(request, state, publisher):
     if not isinstance(request, dict):
         return response(False, "A mensagem precisa ser um mapa MessagePack")
 
@@ -55,9 +57,6 @@ def process_request(request, state):
         return response(False, "A mensagem precisa conter um timestamp inteiro")
 
     operation = request.get("op")
-
-    if operation == "ping":
-        return response(True, "servidor disponivel")
 
     if operation == "login":
         username = request.get("username")
@@ -72,7 +71,6 @@ def process_request(request, state):
         state["logins"].append(
             {"username": username, "timestamp": login_timestamp}
         )
-        save_state(state)
         return response(True, "Login realizado", {"username": username})
 
     username = request.get("username")
@@ -115,12 +113,36 @@ def process_request(request, state):
                 "timestamp": created_timestamp,
             }
         )
-        save_state(state)
         return response(
             True,
             "Canal criado",
             {"channel": channel_name, "created": True},
         )
+
+    if operation == "publish":
+        channel_name = request.get("channel")
+        message_text = request.get("message")
+        if not isinstance(channel_name, str) or channel_name not in [
+            channel["name"] for channel in state["channels"]
+        ]:
+            return response(False, "O canal não existe")
+        if not isinstance(message_text, str) or not message_text:
+            return response(False, "A mensagem não pode ficar vazia")
+
+        publication = {
+            "channel": channel_name,
+            "username": username,
+            "message": message_text,
+            "timestamp": request["timestamp"],
+            "sent_at": request["timestamp"],
+            "received_at": timestamp(),
+        }
+        topic = (channel_name + "\0").encode("utf-8")
+        publisher.send_multipart(
+            [topic, msgpack.packb(publication, use_bin_type=True)]
+        )
+        state["publications"].append(publication)
+        return response(True, "Mensagem publicada", publication)
 
     return response(False, "Operação desconhecida")
 
@@ -134,24 +156,32 @@ def main():
     state = load_state()
     context = zmq.Context()
     socket = context.socket(zmq.REP)
+    publisher = context.socket(zmq.PUB)
     socket.setsockopt(zmq.LINGER, 0)
+    publisher.setsockopt(zmq.LINGER, 0)
     socket.bind("tcp://*:5555")
+    publisher.connect(os.getenv("PROXY_PUB_URL", "tcp://proxy:5557"))
     print(f"[{SERVER_NAME}] aguardando mensagens na porta 5555", flush=True)
 
     try:
         while True:
             raw_message = socket.recv()
+            request = None
             try:
                 request = msgpack.unpackb(raw_message, raw=False)
                 print_message("recebido", request)
-                result = process_request(request, state)
+                result = process_request(request, state, publisher)
             except (msgpack.UnpackException, ValueError, TypeError) as error:
                 result = response(False, f"Mensagem invalida: {error}")
 
+            if isinstance(request, dict):
+                state["messages"].append({"request": request, "response": result})
+                save_state(state)
             print_message("enviado", result)
             socket.send(msgpack.packb(result, use_bin_type=True))
     finally:
         socket.close()
+        publisher.close()
         context.term()
 
 
