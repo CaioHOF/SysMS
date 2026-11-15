@@ -1,0 +1,51 @@
+services:
+  servidor1:
+    build:
+      context: ./src/servidor
+      dockerfile: Dockerfile
+    environment:
+      SERVER_NAME: servidor1
+      DATA_FILE: /dados/dados.json
+    volumes:
+      - dados_servidor1:/dados
+    ports:
+      - "5555:5555"
+  servidor2:
+    build:
+      context: ./src/servidor
+      dockerfile: Dockerfile
+    environment:
+      SERVER_NAME: servidor2
+      DATA_FILE: /dados/dados.json
+    volumes:
+      - dados_servidor2:/dados
+    ports:
+      - "5556:5555"
+  cliente1:
+    build:
+      context: ./src/cliente
+      dockerfile: Dockerfile
+    environment:
+      BOT_NAME: ana
+      CHANNEL_NAME: geral
+      SERVER_URLS: tcp://servidor1:5555,tcp://servidor2:5555
+    depends_on:
+      - servidor1
+      - servidor2
+
+  cliente2:
+    build:
+      context: ./src/cliente
+      dockerfile: Dockerfile
+    environment:
+      BOT_NAME: bruno
+      CHANNEL_NAME: estudos
+      SERVER_URLS: tcp://servidor1:5555,tcp://servidor2:5555
+    depends_on:
+      - servidor1
+      - servidor2
+      - cliente1
+
+volumes:
+  dados_servidor1:
+  dados_servidor2:
