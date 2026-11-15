@@ -112,6 +112,7 @@ public class Cliente {
         if (channel != null) message.put("channel", channel);
         if (text != null) message.put("message", text);
         message.put("timestamp", Instant.now().toEpochMilli());
+        message.put("logical_clock", logicalClock.incrementAndGet());
 
         System.out.println("[" + username + " -> " + endpoint + "] enviado: " + message);
         socket.send(pack(message), 0);
