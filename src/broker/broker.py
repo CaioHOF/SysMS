@@ -9,7 +9,7 @@ uSocketServidores.setsockopt(zmq.LINGER, 0)
 uSocketClientes.bind("tcp://*:5555")
 uSocketServidores.bind("tcp://*:5556")
 
-print("...Broker Req-Rep aguardando clientes e servidores...", flush=True)
+print("Broker Req-Rep aguardando clientes e servidores...", flush=True)
 
 try:
     zmq.proxy(uSocketClientes, uSocketServidores)
