@@ -72,10 +72,7 @@ def process_request(request):
         if name not in SERVERS or request.get("rank") != SERVERS[name]:
             return response(False, "Servidor não registrado")
         LAST_HEARTBEAT[name] = time.monotonic()
-        return response(True, "Heartbeat recebido", {
-            "rank": SERVERS[name],
-            "time": timestamp(),
-        })
+        return response(True, "Heartbeat recebido", {"rank": SERVERS[name]})
 
     return response(False, "Operação desconhecida")
 
