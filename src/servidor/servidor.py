@@ -16,6 +16,7 @@ CLOCK_OFFSET = 0
 SERVER_RANK = 0
 COORDINATOR_NAME = None
 ACTIVE_SERVERS = []
+KNOWN_SERVERS = {}
 UNAVAILABLE_SERVERS = set()
 HEARTBEAT_INTERVAL = 10
 SYNC_INTERVAL = 15
@@ -235,7 +236,7 @@ def set_coordinator(name, publisher, announce=False):
     COORDINATOR_NAME = name
     if changed:
         print(f"[{SERVER_NAME}] coordenador: {COORDINATOR_NAME}", flush=True)
-    if announce and name == SERVER_NAME:
+    if announce:
         announce_coordinator(publisher, name)
 
 
@@ -245,8 +246,14 @@ def refresh_coordinator(ref_socket, publisher, announce=False):
         reply = ref_request(ref_socket, "list")
         if reply.get("ok"):
             ACTIVE_SERVERS = reply.get("data", {}).get("servers", [])
+            for server in ACTIVE_SERVERS:
+                KNOWN_SERVERS[server["name"]] = server["rank"]
     except (zmq.error.Again, OSError, KeyError) as error:
         print(f"[{SERVER_NAME}] falha ao consultar servidores: {error}", flush=True)
+
+    active_names = {server.get("name") for server in ACTIVE_SERVERS}
+    if COORDINATOR_NAME and COORDINATOR_NAME not in active_names:
+        return
 
     servers = [
         server
@@ -308,13 +315,14 @@ def elect_coordinator(context, ref_socket, publisher):
         reply = ref_request(ref_socket, "list")
         if reply.get("ok"):
             ACTIVE_SERVERS = reply.get("data", {}).get("servers", [])
+            for server in ACTIVE_SERVERS:
+                KNOWN_SERVERS[server["name"]] = server["rank"]
     except (zmq.error.Again, OSError, KeyError) as error:
         print(f"[{SERVER_NAME}] falha ao consultar servidores para eleição: {error}", flush=True)
 
     candidates = [{"name": SERVER_NAME, "rank": SERVER_RANK}]
-    for server in ACTIVE_SERVERS:
-        name = server.get("name")
-        if not name or name == SERVER_NAME or name in UNAVAILABLE_SERVERS:
+    for name, rank in KNOWN_SERVERS.items():
+        if not name or name == SERVER_NAME:
             continue
 
         try:
@@ -329,7 +337,7 @@ def elect_coordinator(context, ref_socket, publisher):
                 candidates.append(
                     reply.get(
                         "data",
-                        {"name": name, "rank": server.get("rank", 0)},
+                        {"name": name, "rank": rank},
                     )
                 )
                 UNAVAILABLE_SERVERS.discard(name)
@@ -341,7 +349,7 @@ def elect_coordinator(context, ref_socket, publisher):
     set_coordinator(
         coordinator["name"],
         publisher,
-        announce=(coordinator["name"] == SERVER_NAME),
+        announce=True,
     )
 
 
