@@ -4,101 +4,101 @@ import msgpack
 import zmq
 
 
-SERVERS = {}
-LAST_HEARTBEAT = {}
-NEXT_RANK = 1
-LOGICAL_CLOCK = 0
-HEARTBEAT_TIMEOUT = 30
+uServidoresRegistrados = {}
+uUltimoHeartbeat = {}
+uProximoRank = 1
+uRelogioLogico = 0
+uTimeoutHeartbeat = 30
 
 
-def timestamp():
+def iObterTimestamp():
     return int(time.time() * 1000)
 
 
-def response(ok, message, data=None):
+def mCriarResposta(uSucesso, uMensagemResposta, uDados=None):
     #coloquei global pra facilitar
-    global LOGICAL_CLOCK
-    LOGICAL_CLOCK += 1
-    result = {
-        "ok": ok,
-        "timestamp": timestamp(),
-        "logical_clock": LOGICAL_CLOCK,
-        "message": message,
+    global uRelogioLogico
+    uRelogioLogico += 1
+    uResultado = {
+        "ok": uSucesso,
+        "timestamp": iObterTimestamp(),
+        "logical_clock": uRelogioLogico,
+        "message": uMensagemResposta,
     }
-    if data is not None:
-        result["data"] = data
-    return result
+    if uDados is not None:
+        uResultado["data"] = uDados
+    return uResultado
 
 
-def active_servers():
-    now = time.monotonic()
-    for name, last_seen in list(LAST_HEARTBEAT.items()):
-        if now - last_seen > HEARTBEAT_TIMEOUT:
-            del LAST_HEARTBEAT[name]
+def vtListarServidoresAtivos():
+    uAgora = time.monotonic()
+    for uNome, uUltimoSinal in list(uUltimoHeartbeat.items()):
+        if uAgora - uUltimoSinal > uTimeoutHeartbeat:
+            del uUltimoHeartbeat[uNome]
     return sorted(
-        [{"name": name, "rank": rank} for name, rank in SERVERS.items()
-         if name in LAST_HEARTBEAT],
-        key=lambda server: server["rank"],
+        [{"name": uNome, "rank": uRank} for uNome, uRank in uServidoresRegistrados.items()
+         if uNome in uUltimoHeartbeat],
+        key=lambda uServidor: uServidor["rank"],
     )
 
 
-def process_request(request):
-    global LOGICAL_CLOCK, NEXT_RANK
-    if not isinstance(request, dict):
-        return response(False, "A mensagem precisa ser um mapa MessagePack")
-    if not isinstance(request.get("timestamp"), int):
-        return response(False, "A mensagem precisa conter timestamp")
-    if not isinstance(request.get("logical_clock"), int):
-        return response(False, "A mensagem precisa conter contador lógico")
+def mProcessarPedido(uRequisicao):
+    global uRelogioLogico, uProximoRank
+    if not isinstance(uRequisicao, dict):
+        return mCriarResposta(False, "A mensagem precisa ser um mapa MessagePack")
+    if not isinstance(uRequisicao.get("timestamp"), int):
+        return mCriarResposta(False, "A mensagem precisa conter timestamp")
+    if not isinstance(uRequisicao.get("logical_clock"), int):
+        return mCriarResposta(False, "A mensagem precisa conter contador lógico")
 
-    LOGICAL_CLOCK = max(LOGICAL_CLOCK, request["logical_clock"])
-    operation = request.get("op")
-    name = request.get("name")
+    uRelogioLogico = max(uRelogioLogico, uRequisicao["logical_clock"])
+    uOperacao = uRequisicao.get("op")
+    uNome = uRequisicao.get("name")
 
-    if operation == "list":
-        return response(True, "Servidores disponíveis", {"servers": active_servers()})
+    if uOperacao == "list":
+        return mCriarResposta(True, "Servidores disponíveis", {"servers": vtListarServidoresAtivos()})
 
-    if not isinstance(name, str) or not name:
-        return response(False, "Nome do servidor inválido")
+    if not isinstance(uNome, str) or not uNome:
+        return mCriarResposta(False, "Nome do servidor inválido")
 
-    if operation == "rank":
-        if name not in SERVERS:
-            SERVERS[name] = NEXT_RANK
-            NEXT_RANK += 1
-        LAST_HEARTBEAT[name] = time.monotonic()
-        return response(True, "Rank do servidor", {"rank": SERVERS[name]})
+    if uOperacao == "rank":
+        if uNome not in uServidoresRegistrados:
+            uServidoresRegistrados[uNome] = uProximoRank
+            uProximoRank += 1
+        uUltimoHeartbeat[uNome] = time.monotonic()
+        return mCriarResposta(True, "Rank do servidor", {"rank": uServidoresRegistrados[uNome]})
 
-    if operation == "heartbeat":
-        if name not in SERVERS or request.get("rank") != SERVERS[name]:
-            return response(False, "Servidor não registrado")
-        LAST_HEARTBEAT[name] = time.monotonic()
-        return response(True, "Heartbeat recebido", {"rank": SERVERS[name]})
+    if uOperacao == "heartbeat":
+        if uNome not in uServidoresRegistrados or uRequisicao.get("rank") != uServidoresRegistrados[uNome]:
+            return mCriarResposta(False, "Servidor não registrado")
+        uUltimoHeartbeat[uNome] = time.monotonic()
+        return mCriarResposta(True, "Heartbeat recebido", {"rank": uServidoresRegistrados[uNome]})
 
-    return response(False, "Operação desconhecida")
+    return mCriarResposta(False, "Operação desconhecida")
 
 
-def main():
-    context = zmq.Context()
-    socket = context.socket(zmq.REP)
-    socket.setsockopt(zmq.LINGER, 0)
-    socket.bind("tcp://*:5560")
+def vExecutarRef():
+    uContexto = zmq.Context()
+    uSocket = uContexto.socket(zmq.REP)
+    uSocket.setsockopt(zmq.LINGER, 0)
+    uSocket.bind("tcp://*:5560")
     print("Serviço ref aguardando na porta 5560", flush=True)
 
     try:
         while True:
-            raw_message = socket.recv()
+            vtMensagemBruta = uSocket.recv()
             try:
-                request = msgpack.unpackb(raw_message, raw=False)
-                print("ref recebeu:", request, flush=True)
-                result = process_request(request)
-            except (msgpack.UnpackException, ValueError, TypeError) as error:
-                result = response(False, f"Mensagem inválida: {error}")
-            print("ref enviou:", result, flush=True)
-            socket.send(msgpack.packb(result, use_bin_type=True))
+                uRequisicao = msgpack.unpackb(vtMensagemBruta, raw=False)
+                print("ref recebeu:", uRequisicao, flush=True)
+                uResultado = mProcessarPedido(uRequisicao)
+            except (msgpack.UnpackException, ValueError, TypeError) as uErro:
+                uResultado = mCriarResposta(False, f"Mensagem inválida: {uErro}")
+            print("ref enviou:", uResultado, flush=True)
+            uSocket.send(msgpack.packb(uResultado, use_bin_type=True))
     finally:
-        socket.close()
-        context.term()
+        uSocket.close()
+        uContexto.term()
 
 
 if __name__ == "__main__":
-    main()
+    vExecutarRef()

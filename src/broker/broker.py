@@ -1,19 +1,19 @@
 import zmq
 
 
-context = zmq.Context()
-clients = context.socket(zmq.ROUTER)
-servers = context.socket(zmq.DEALER)
-clients.setsockopt(zmq.LINGER, 0)
-servers.setsockopt(zmq.LINGER, 0)
-clients.bind("tcp://*:5555")
-servers.bind("tcp://*:5556")
+uContexto = zmq.Context()
+uSocketClientes = uContexto.socket(zmq.ROUTER)
+uSocketServidores = uContexto.socket(zmq.DEALER)
+uSocketClientes.setsockopt(zmq.LINGER, 0)
+uSocketServidores.setsockopt(zmq.LINGER, 0)
+uSocketClientes.bind("tcp://*:5555")
+uSocketServidores.bind("tcp://*:5556")
 
 print("...Broker Req-Rep aguardando clientes e servidores...", flush=True)
 
 try:
-    zmq.proxy(clients, servers)
+    zmq.proxy(uSocketClientes, uSocketServidores)
 finally:
-    clients.close()
-    servers.close()
-    context.term()
+    uSocketClientes.close()
+    uSocketServidores.close()
+    uContexto.term()

@@ -8,379 +8,379 @@ import msgpack
 import zmq
 
 
-SERVER_NAME = os.getenv("SERVER_NAME", "servidor")
-DATA_FILE = Path(os.getenv("DATA_FILE", "/dados/dados.json"))
-REF_URL = os.getenv("REF_URL", "tcp://ref:5560")
-BROKER_URL = os.getenv("BROKER_URL", "tcp://broker:5556")
-PROXY_SUB_URL = os.getenv("PROXY_SUB_URL", "tcp://proxy:5558")
-LOGICAL_CLOCK = 0
-CLOCK_OFFSET = 0
-SERVER_RANK = 0
-COORDINATOR_NAME = None
-ACTIVE_SERVERS = []
-KNOWN_SERVERS = {}
-UNAVAILABLE_SERVERS = set()
-HEARTBEAT_INTERVAL = 10
-SYNC_INTERVAL = 15
+uNomeServidor = os.getenv("SERVER_NAME", "servidor")
+uArquivoDados = Path(os.getenv("DATA_FILE", "/dados/dados.json"))
+uUrlReferencia = os.getenv("REF_URL", "tcp://ref:5560")
+uUrlBroker = os.getenv("BROKER_URL", "tcp://broker:5556")
+uUrlProxyAssinante = os.getenv("PROXY_SUB_URL", "tcp://proxy:5558")
+uRelogioLogico = 0
+uDesvioRelogio = 0
+uRankServidor = 0
+uNomeCoordenador = None
+vtServidoresAtivos = []
+uServidoresConhecidos = {}
+uServidoresIndisponiveis = set()
+uIntervaloHeartbeat = 10
+uIntervaloSincronizacao = 15
 
 
-def next_clock():
-    global LOGICAL_CLOCK
-    LOGICAL_CLOCK += 1
-    return LOGICAL_CLOCK
+def iProximoRelogio():
+    global uRelogioLogico
+    uRelogioLogico += 1
+    return uRelogioLogico
 
 
-def observe_clock(received):
-    global LOGICAL_CLOCK
-    LOGICAL_CLOCK = max(LOGICAL_CLOCK, received)
+def vAtualizarRelogioLogico(uRelogioRecebido):
+    global uRelogioLogico
+    uRelogioLogico = max(uRelogioLogico, uRelogioRecebido)
 
 
-def timestamp():
-    return int(time.time() * 1000) + CLOCK_OFFSET
+def iObterTimestamp():
+    return int(time.time() * 1000) + uDesvioRelogio
 
 
-def empty_state():
+def mCriarEstadoVazio():
     return {"users": [], "logins": [], "channels": [], "messages": [], "publications": []}
 
 
-def load_state():
-    DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
-    if not DATA_FILE.exists():
-        return empty_state()
+def mCarregarEstado():
+    uArquivoDados.parent.mkdir(parents=True, exist_ok=True)
+    if not uArquivoDados.exists():
+        return mCriarEstadoVazio()
 
-    with DATA_FILE.open("r", encoding="utf-8") as file:
-        state = json.load(file)
+    with uArquivoDados.open("r", encoding="utf-8") as uArquivo:
+        uEstado = json.load(uArquivo)
 
-    state.setdefault("users", [])
-    state.setdefault("logins", [])
-    state.setdefault("channels", [])
-    state.setdefault("messages", [])
-    state.setdefault("publications", [])
-    return state
-
-
-def save_state(state):
-    temporary_file = DATA_FILE.with_suffix(".tmp")
-    with temporary_file.open("w", encoding="utf-8") as file:
-        json.dump(state, file, ensure_ascii=False, indent=2)
-    temporary_file.replace(DATA_FILE)
+    uEstado.setdefault("users", [])
+    uEstado.setdefault("logins", [])
+    uEstado.setdefault("channels", [])
+    uEstado.setdefault("messages", [])
+    uEstado.setdefault("publications", [])
+    return uEstado
 
 
-def response(ok, message, data=None):
-    result = {
-        "ok": ok,
-        "timestamp": timestamp(),
-        "logical_clock": next_clock(),
-        "message": message,
+def vSalvarEstado(uEstado):
+    uArquivoTemporario = uArquivoDados.with_suffix(".tmp")
+    with uArquivoTemporario.open("w", encoding="utf-8") as uArquivo:
+        json.dump(uEstado, uArquivo, ensure_ascii=False, indent=2)
+    uArquivoTemporario.replace(uArquivoDados)
+
+
+def mCriarResposta(uSucesso, uMensagemResposta, uDados=None):
+    uResultado = {
+        "ok": uSucesso,
+        "timestamp": iObterTimestamp(),
+        "logical_clock": iProximoRelogio(),
+        "message": uMensagemResposta,
     }
-    if data is not None:
-        result["data"] = data
-    return result
+    if uDados is not None:
+        uResultado["data"] = uDados
+    return uResultado
 
 
-def process_request(request, state, publisher):
-    if not isinstance(request, dict):
-        return response(False, "A mensagem precisa ser um mapa MessagePack")
+def mProcessarPedido(uRequisicao, uEstado, uPublicador):
+    if not isinstance(uRequisicao, dict):
+        return mCriarResposta(False, "A mensagem precisa ser um mapa MessagePack")
 
-    if not isinstance(request.get("timestamp"), int):
-        return response(False, "A mensagem precisa conter um timestamp inteiro")
-    if not isinstance(request.get("logical_clock"), int):
-        return response(False, "A mensagem precisa conter o contador lógico")
+    if not isinstance(uRequisicao.get("timestamp"), int):
+        return mCriarResposta(False, "A mensagem precisa conter um timestamp inteiro")
+    if not isinstance(uRequisicao.get("logical_clock"), int):
+        return mCriarResposta(False, "A mensagem precisa conter o contador lógico")
 
-    operation = request.get("op")
+    uOperacao = uRequisicao.get("op")
 
-    if operation == "election":
-        return response(
+    if uOperacao == "election":
+        return mCriarResposta(
             True,
             "OK",
-            {"name": SERVER_NAME, "rank": SERVER_RANK},
+            {"name": uNomeServidor, "rank": uRankServidor},
         )
 
-    if operation == "clock":
-        global CLOCK_OFFSET
-        if COORDINATOR_NAME != SERVER_NAME:
-            return response(False, "Este servidor não é o coordenador")
+    if uOperacao == "clock":
+        global uDesvioRelogio
+        if uNomeCoordenador != uNomeServidor:
+            return mCriarResposta(False, "Este servidor não é o coordenador")
 
-        correct_time = (request["timestamp"] + timestamp()) // 2
-        CLOCK_OFFSET = correct_time - int(time.time() * 1000)
-        return response(True, "Hora correta", {"time": correct_time})
+        uHoraCorreta = (uRequisicao["timestamp"] + iObterTimestamp()) // 2
+        uDesvioRelogio = uHoraCorreta - int(time.time() * 1000)
+        return mCriarResposta(True, "Hora correta", {"time": uHoraCorreta})
 
-    if operation == "login":
-        username = request.get("username")
-        if not isinstance(username, str) or not username.strip():
-            return response(False, "O nome do usuario não pode ficar vazio")
+    if uOperacao == "login":
+        uNomeUsuario = uRequisicao.get("username")
+        if not isinstance(uNomeUsuario, str) or not uNomeUsuario.strip():
+            return mCriarResposta(False, "O nome do usuario não pode ficar vazio")
 
-        username = username.strip()
-        if username not in state["users"]:
-            state["users"].append(username)
+        uNomeUsuario = uNomeUsuario.strip()
+        if uNomeUsuario not in uEstado["users"]:
+            uEstado["users"].append(uNomeUsuario)
 
-        login_timestamp = timestamp()
-        state["logins"].append(
-            {"username": username, "timestamp": login_timestamp}
+        uHorarioLogin = iObterTimestamp()
+        uEstado["logins"].append(
+            {"username": uNomeUsuario, "timestamp": uHorarioLogin}
         )
-        return response(True, "Login realizado", {"username": username})
+        return mCriarResposta(True, "Login realizado", {"username": uNomeUsuario})
 
-    username = request.get("username")
-    if not isinstance(username, str) or username not in state["users"]:
-        return response(False, "Faça login antes de usar esta operação")
+    uNomeUsuario = uRequisicao.get("username")
+    if not isinstance(uNomeUsuario, str) or uNomeUsuario not in uEstado["users"]:
+        return mCriarResposta(False, "Faça login antes de usar esta operação")
 
-    if operation == "list_channels":
-        channels = sorted(channel["name"] for channel in state["channels"])
-        return response(True, "Canais disponiveis", {"channels": channels})
+    if uOperacao == "list_channels":
+        vtCanais = sorted(uCanal["name"] for uCanal in uEstado["channels"])
+        return mCriarResposta(True, "Canais disponiveis", {"channels": vtCanais})
 
-    if operation == "list_messages":
-        channel_name = request.get("channel")
-        messages = state["publications"]
-        if isinstance(channel_name, str):
-            messages = [
-                message for message in messages
-                if message["channel"] == channel_name
+    if uOperacao == "list_messages":
+        uNomeCanal = uRequisicao.get("channel")
+        vtMensagens = uEstado["publications"]
+        if isinstance(uNomeCanal, str):
+            vtMensagens = [
+                uMensagem for uMensagem in vtMensagens
+                if uMensagem["channel"] == uNomeCanal
             ]
-        messages = sorted(
-            messages,
-            key=lambda message: (
-                message.get("sent_at", message.get("timestamp", 0)),
-                message.get("event_id", ""),
-                message.get("username", ""),
-                message.get("message", ""),
+        vtMensagens = sorted(
+            vtMensagens,
+            key=lambda uMensagem: (
+                uMensagem.get("sent_at", uMensagem.get("timestamp", 0)),
+                uMensagem.get("event_id", ""),
+                uMensagem.get("username", ""),
+                uMensagem.get("message", ""),
             ),
         )
-        offset = request.get("offset", 0)
-        limit = request.get("limit", 100)
-        if not isinstance(offset, int) or offset < 0:
-            return response(False, "O offset do historico precisa ser positivo")
-        if not isinstance(limit, int) or limit < 1:
-            return response(False, "O limite do historico precisa ser positivo")
-        limit = min(limit, 100)
-        return response(
+        uDeslocamento = uRequisicao.get("offset", 0)
+        uLimite = uRequisicao.get("limit", 100)
+        if not isinstance(uDeslocamento, int) or uDeslocamento < 0:
+            return mCriarResposta(False, "O offset do historico precisa ser positivo")
+        if not isinstance(uLimite, int) or uLimite < 1:
+            return mCriarResposta(False, "O limite do historico precisa ser positivo")
+        uLimite = min(uLimite, 100)
+        return mCriarResposta(
             True,
             "Historico de mensagens",
             {
-                "messages": messages[offset:offset + limit],
-                "offset": offset,
-                "total": len(messages),
-                "more": offset + limit < len(messages),
+                "messages": vtMensagens[uDeslocamento:uDeslocamento + uLimite],
+                "offset": uDeslocamento,
+                "total": len(vtMensagens),
+                "more": uDeslocamento + uLimite < len(vtMensagens),
             },
         )
 
-    if operation == "create_channel":
-        channel_name = request.get("channel")
-        if not isinstance(channel_name, str):
-            return response(False, "O nome do canal precisa ser texto")
+    if uOperacao == "create_channel":
+        uNomeCanal = uRequisicao.get("channel")
+        if not isinstance(uNomeCanal, str):
+            return mCriarResposta(False, "O nome do canal precisa ser texto")
 
-        channel_name = channel_name.strip()
-        if not channel_name or len(channel_name) > 64:
-            return response(False, "O nome do canal deve ter de 1 a 64 caracteres")
+        uNomeCanal = uNomeCanal.strip()
+        if not uNomeCanal or len(uNomeCanal) > 64:
+            return mCriarResposta(False, "O nome do canal deve ter de 1 a 64 caracteres")
 
-        existing = next(
+        uExistente = next(
             (
-                channel
-                for channel in state["channels"]
-                if channel["name"] == channel_name
+                uCanal
+                for uCanal in uEstado["channels"]
+                if uCanal["name"] == uNomeCanal
             ),
             None,
         )
-        if existing is not None:
-            return response(
+        if uExistente is not None:
+            return mCriarResposta(
                 True,
                 "O canal ja existe",
-                {"channel": channel_name, "created": False},
+                {"channel": uNomeCanal, "created": False},
             )
 
-        created_timestamp = timestamp()
-        state["channels"].append(
+        uHorarioCriacao = iObterTimestamp()
+        uEstado["channels"].append(
             {
-                "name": channel_name,
-                "created_by": username,
-                "timestamp": created_timestamp,
+                "name": uNomeCanal,
+                "created_by": uNomeUsuario,
+                "timestamp": uHorarioCriacao,
             }
         )
-        return response(
+        return mCriarResposta(
             True,
             "Canal criado",
-            {"channel": channel_name, "created": True},
+            {"channel": uNomeCanal, "created": True},
         )
 
-    if operation == "publish":
-        channel_name = request.get("channel")
-        message_text = request.get("message")
-        if not isinstance(channel_name, str) or channel_name not in [
-            channel["name"] for channel in state["channels"]
+    if uOperacao == "publish":
+        uNomeCanal = uRequisicao.get("channel")
+        uTextoMensagem = uRequisicao.get("message")
+        if not isinstance(uNomeCanal, str) or uNomeCanal not in [
+            uCanal["name"] for uCanal in uEstado["channels"]
         ]:
-            return response(False, "O canal não existe")
-        if not isinstance(message_text, str) or not message_text:
-            return response(False, "A mensagem não pode ficar vazia")
+            return mCriarResposta(False, "O canal não existe")
+        if not isinstance(uTextoMensagem, str) or not uTextoMensagem:
+            return mCriarResposta(False, "A mensagem não pode ficar vazia")
 
-        publication = {
-            "channel": channel_name,
-            "username": username,
-            "message": message_text,
-            "timestamp": request["timestamp"],
-            "sent_at": request["timestamp"],
-            "received_at": timestamp(),
-            "logical_clock": next_clock(),
+        uPublicacao = {
+            "channel": uNomeCanal,
+            "username": uNomeUsuario,
+            "message": uTextoMensagem,
+            "timestamp": uRequisicao["timestamp"],
+            "sent_at": uRequisicao["timestamp"],
+            "received_at": iObterTimestamp(),
+            "logical_clock": iProximoRelogio(),
         }
-        topic = (channel_name + "\0").encode("utf-8")
-        publisher.send_multipart(
-            [topic, msgpack.packb(publication, use_bin_type=True)]
+        vtTopico = (uNomeCanal + "\0").encode("utf-8")
+        uPublicador.send_multipart(
+            [vtTopico, msgpack.packb(uPublicacao, use_bin_type=True)]
         )
-        state["publications"].append(publication)
-        return response(True, "Mensagem publicada", publication)
+        uEstado["publications"].append(uPublicacao)
+        return mCriarResposta(True, "Mensagem publicada", uPublicacao)
 
-    return response(False, "Operação desconhecida")
-
-
-def print_message(direction, message):
-    readable_message = json.dumps(message, ensure_ascii=False)
-    print(f"[{SERVER_NAME}] {direction}: {readable_message}", flush=True)
+    return mCriarResposta(False, "Operação desconhecida")
 
 
-def ref_request(socket, operation, **fields):
-    request = {
-        "op": operation,
-        "name": SERVER_NAME,
-        "timestamp": timestamp(),
-        "logical_clock": next_clock(),
+def vExibirMensagem(uDirecao, uMensagem):
+    uMensagemFormatada = json.dumps(uMensagem, ensure_ascii=False)
+    print(f"[{uNomeServidor}] {uDirecao}: {uMensagemFormatada}", flush=True)
+
+
+def mSolicitarReferencia(uSocket, uOperacao, **uCampos):
+    uRequisicao = {
+        "op": uOperacao,
+        "name": uNomeServidor,
+        "timestamp": iObterTimestamp(),
+        "logical_clock": iProximoRelogio(),
     }
-    request.update(fields)
-    socket.send(msgpack.packb(request, use_bin_type=True))
-    reply = msgpack.unpackb(socket.recv(), raw=False)
-    observe_clock(reply["logical_clock"])
-    return reply
+    uRequisicao.update(uCampos)
+    uSocket.send(msgpack.packb(uRequisicao, use_bin_type=True))
+    uResposta = msgpack.unpackb(uSocket.recv(), raw=False)
+    vAtualizarRelogioLogico(uResposta["logical_clock"])
+    return uResposta
 
 
-def send_heartbeat(socket, rank):
+def vEnviarHeartbeat(uSocket, uRank):
     try:
-        reply = ref_request(socket, "heartbeat", rank=rank)
-        if reply.get("ok"):
-            print(f"[{SERVER_NAME}] heartbeat; rank={rank}", flush=True)
+        uResposta = mSolicitarReferencia(uSocket, "heartbeat", rank=uRank)
+        if uResposta.get("ok"):
+            print(f"[{uNomeServidor}] heartbeat; rank={uRank}", flush=True)
         else:
-            print(f"[{SERVER_NAME}] heartbeat recusado: {reply.get('message')}", flush=True)
-    except (zmq.error.Again, OSError, KeyError) as error:
-        print(f"[{SERVER_NAME}] falha no heartbeat: {error}", flush=True)
+            print(f"[{uNomeServidor}] heartbeat recusado: {uResposta.get('message')}", flush=True)
+    except (zmq.error.Again, OSError, KeyError) as uErro:
+        print(f"[{uNomeServidor}] falha no heartbeat: {uErro}", flush=True)
 
 
-def announce_coordinator(publisher, name):
-    publisher.send_multipart(
+def vAnunciarCoordenador(uPublicador, uNome):
+    uPublicador.send_multipart(
         [
             b"servers\0",
             msgpack.packb(
                 {
-                    "coordinator": name,
-                    "timestamp": timestamp(),
-                    "logical_clock": next_clock(),
+                    "coordinator": uNome,
+                    "timestamp": iObterTimestamp(),
+                    "logical_clock": iProximoRelogio(),
                 },
                 use_bin_type=True,
             ),
         ]
     )
-    print(f"[{SERVER_NAME}] coordenador anunciado: {name}", flush=True)
+    print(f"[{uNomeServidor}] coordenador anunciado: {uNome}", flush=True)
 
 
-def set_coordinator(name, publisher, announce=False):
-    global COORDINATOR_NAME
-    changed = name != COORDINATOR_NAME
-    COORDINATOR_NAME = name
-    if changed:
-        print(f"[{SERVER_NAME}] coordenador: {COORDINATOR_NAME}", flush=True)
-    if announce:
-        announce_coordinator(publisher, name)
+def vDefinirCoordenador(uNome, uPublicador, uAnunciar=False):
+    global uNomeCoordenador
+    uAlterado = uNome != uNomeCoordenador
+    uNomeCoordenador = uNome
+    if uAlterado:
+        print(f"[{uNomeServidor}] coordenador: {uNomeCoordenador}", flush=True)
+    if uAnunciar:
+        vAnunciarCoordenador(uPublicador, uNome)
 
 
-def refresh_coordinator(ref_socket, publisher, announce=False):
-    global ACTIVE_SERVERS
+def vAtualizarCoordenador(uSocketReferencia, uPublicador, uAnunciar=False):
+    global vtServidoresAtivos
     try:
-        reply = ref_request(ref_socket, "list")
-        if reply.get("ok"):
-            ACTIVE_SERVERS = reply.get("data", {}).get("servers", [])
-            for server in ACTIVE_SERVERS:
-                KNOWN_SERVERS[server["name"]] = server["rank"]
-    except (zmq.error.Again, OSError, KeyError) as error:
-        print(f"[{SERVER_NAME}] falha ao consultar servidores: {error}", flush=True)
+        uResposta = mSolicitarReferencia(uSocketReferencia, "list")
+        if uResposta.get("ok"):
+            vtServidoresAtivos = uResposta.get("data", {}).get("servers", [])
+            for uServidor in vtServidoresAtivos:
+                uServidoresConhecidos[uServidor["name"]] = uServidor["rank"]
+    except (zmq.error.Again, OSError, KeyError) as uErro:
+        print(f"[{uNomeServidor}] falha ao consultar servidores: {uErro}", flush=True)
 
-    active_names = {server.get("name") for server in ACTIVE_SERVERS}
-    if COORDINATOR_NAME and COORDINATOR_NAME not in active_names:
+    vtNomesAtivos = {uServidor.get("name") for uServidor in vtServidoresAtivos}
+    if uNomeCoordenador and uNomeCoordenador not in vtNomesAtivos:
         return
 
-    servers = [
-        server
-        for server in ACTIVE_SERVERS
-        if server.get("name") not in UNAVAILABLE_SERVERS
+    vtServidores = [
+        uServidor
+        for uServidor in vtServidoresAtivos
+        if uServidor.get("name") not in uServidoresIndisponiveis
     ]
-    if not any(server.get("name") == SERVER_NAME for server in servers):
-        servers.append({"name": SERVER_NAME, "rank": SERVER_RANK})
+    if not any(uServidor.get("name") == uNomeServidor for uServidor in vtServidores):
+        vtServidores.append({"name": uNomeServidor, "rank": uRankServidor})
 
-    if servers:
-        coordinator = max(servers, key=lambda server: server.get("rank", 0))
-        set_coordinator(coordinator["name"], publisher, announce=announce)
-
-
-def replica_item_key(item):
-    if isinstance(item, dict) and item.get("event_id"):
-        return item["event_id"]
-    return json.dumps(item, ensure_ascii=False, sort_keys=True)
+    if vtServidores:
+        uCoordenador = max(vtServidores, key=lambda uServidor: uServidor.get("rank", 0))
+        vDefinirCoordenador(uCoordenador["name"], uPublicador, uAnunciar=uAnunciar)
 
 
-def merge_items(destination, received, key_function):
-    keys = {key_function(item) for item in destination}
-    changed = False
-    for item in received:
-        key = key_function(item)
-        if key not in keys:
-            destination.append(item)
-            keys.add(key)
-            changed = True
-    return changed
+def sChaveItemReplica(uItem):
+    if isinstance(uItem, dict) and uItem.get("event_id"):
+        return uItem["event_id"]
+    return json.dumps(uItem, ensure_ascii=False, sort_keys=True)
 
 
-def merge_channels(destination, received):
-    positions = {channel["name"]: index for index, channel in enumerate(destination)}
-    changed = False
-    for channel in received:
-        name = channel["name"]
-        if name not in positions:
-            positions[name] = len(destination)
-            destination.append(channel)
-            changed = True
+def bMesclarItens(vtDestino, vtRecebidos, uFuncaoChave):
+    uChaves = {uFuncaoChave(uItem) for uItem in vtDestino}
+    uAlterado = False
+    for uItem in vtRecebidos:
+        uChave = uFuncaoChave(uItem)
+        if uChave not in uChaves:
+            vtDestino.append(uItem)
+            uChaves.add(uChave)
+            uAlterado = True
+    return uAlterado
+
+
+def bMesclarCanais(vtDestino, vtRecebidos):
+    uPosicoes = {uCanal["name"]: uIndice for uIndice, uCanal in enumerate(vtDestino)}
+    uAlterado = False
+    for uCanal in vtRecebidos:
+        uNome = uCanal["name"]
+        if uNome not in uPosicoes:
+            uPosicoes[uNome] = len(vtDestino)
+            vtDestino.append(uCanal)
+            uAlterado = True
             continue
 
-        index = positions[name]
-        current = destination[index]
-        current_key = (current.get("timestamp", 0), current.get("created_by", ""))
-        received_key = (channel.get("timestamp", 0), channel.get("created_by", ""))
-        if received_key < current_key:
-            destination[index] = channel
-            changed = True
-    return changed
+        uIndice = uPosicoes[uNome]
+        uAtual = vtDestino[uIndice]
+        uChaveAtual = (uAtual.get("timestamp", 0), uAtual.get("created_by", ""))
+        uChaveRecebida = (uCanal.get("timestamp", 0), uCanal.get("created_by", ""))
+        if uChaveRecebida < uChaveAtual:
+            vtDestino[uIndice] = uCanal
+            uAlterado = True
+    return uAlterado
 
 
-def merge_replica_state(state, replica):
-    changed = False
-    changed |= merge_items(state["users"], replica.get("users", []), lambda item: item)
-    changed |= merge_items(state["logins"], replica.get("logins", []), replica_item_key)
-    changed |= merge_channels(state["channels"], replica.get("channels", []))
-    changed |= merge_items(state["messages"], replica.get("messages", []), replica_item_key)
-    changed |= merge_items(state["publications"], replica.get("publications", []), replica_item_key)
-    return changed
+def bMesclarEstadoReplica(uEstado, uReplica):
+    uAlterado = False
+    uAlterado |= bMesclarItens(uEstado["users"], uReplica.get("users", []), lambda uItem: uItem)
+    uAlterado |= bMesclarItens(uEstado["logins"], uReplica.get("logins", []), sChaveItemReplica)
+    uAlterado |= bMesclarCanais(uEstado["channels"], uReplica.get("channels", []))
+    uAlterado |= bMesclarItens(uEstado["messages"], uReplica.get("messages", []), sChaveItemReplica)
+    uAlterado |= bMesclarItens(uEstado["publications"], uReplica.get("publications", []), sChaveItemReplica)
+    return uAlterado
 
 
-def publish_replica_event(publisher, event):
-    event["timestamp"] = timestamp()
-    event["logical_clock"] = next_clock()
-    publisher.send_multipart(
-        [b"replica_event\0", msgpack.packb(event, use_bin_type=True)]
+def vPublicarEventoReplica(uPublicador, uEvento):
+    uEvento["timestamp"] = iObterTimestamp()
+    uEvento["logical_clock"] = iProximoRelogio()
+    uPublicador.send_multipart(
+        [b"replica_event\0", msgpack.packb(uEvento, use_bin_type=True)]
     )
 
 
-def request_replica_snapshot(publisher):
-    publisher.send_multipart(
+def vSolicitarCopiaEstado(uPublicador):
+    uPublicador.send_multipart(
         [
             b"replica_request\0",
             msgpack.packb(
                 {
-                    "source": SERVER_NAME,
-                    "timestamp": timestamp(),
-                    "logical_clock": next_clock(),
+                    "source": uNomeServidor,
+                    "timestamp": iObterTimestamp(),
+                    "logical_clock": iProximoRelogio(),
                 },
                 use_bin_type=True,
             ),
@@ -388,274 +388,274 @@ def request_replica_snapshot(publisher):
     )
 
 
-def receive_pub_message(subscriber, publisher, state, snapshot_sources=None):
-    global COORDINATOR_NAME
-    parts = subscriber.recv_multipart()
-    if len(parts) < 2:
+def vReceberMensagemPubSub(uAssinante, uPublicador, uEstado, uFontesCopia=None):
+    global uNomeCoordenador
+    vtPartes = uAssinante.recv_multipart()
+    if len(vtPartes) < 2:
         return
 
     try:
-        message = msgpack.unpackb(parts[1], raw=False)
+        uMensagem = msgpack.unpackb(vtPartes[1], raw=False)
     except (msgpack.UnpackException, ValueError):
         return
 
-    topic = parts[0]
-    if topic == b"servers\0":
-        name = message.get("coordinator")
-        if isinstance(message.get("logical_clock"), int):
-            observe_clock(message["logical_clock"])
-        if isinstance(name, str) and name:
-            COORDINATOR_NAME = name
-            UNAVAILABLE_SERVERS.discard(name)
-            print(f"[{SERVER_NAME}] coordenador recebido: {name}", flush=True)
+    vtTopico = vtPartes[0]
+    if vtTopico == b"servers\0":
+        uNome = uMensagem.get("coordinator")
+        if isinstance(uMensagem.get("logical_clock"), int):
+            vAtualizarRelogioLogico(uMensagem["logical_clock"])
+        if isinstance(uNome, str) and uNome:
+            uNomeCoordenador = uNome
+            uServidoresIndisponiveis.discard(uNome)
+            print(f"[{uNomeServidor}] coordenador recebido: {uNome}", flush=True)
         return
 
-    if not isinstance(message, dict) or message.get("source") == SERVER_NAME:
+    if not isinstance(uMensagem, dict) or uMensagem.get("source") == uNomeServidor:
         return
-    if isinstance(message.get("logical_clock"), int):
-        observe_clock(message["logical_clock"])
+    if isinstance(uMensagem.get("logical_clock"), int):
+        vAtualizarRelogioLogico(uMensagem["logical_clock"])
 
-    if topic == b"replica_request\0":
-        snapshot = {
-            "source": SERVER_NAME,
-            "state": state,
-            "timestamp": timestamp(),
-            "logical_clock": next_clock(),
+    if vtTopico == b"replica_request\0":
+        uCopiaEstado = {
+            "source": uNomeServidor,
+            "state": uEstado,
+            "timestamp": iObterTimestamp(),
+            "logical_clock": iProximoRelogio(),
         }
-        publisher.send_multipart(
-            [b"replica_state\0", msgpack.packb(snapshot, use_bin_type=True)]
+        uPublicador.send_multipart(
+            [b"replica_state\0", msgpack.packb(uCopiaEstado, use_bin_type=True)]
         )
-    elif topic == b"replica_state\0":
-        if snapshot_sources is not None and isinstance(message.get("source"), str):
-            snapshot_sources.add(message["source"])
-        if merge_replica_state(state, message.get("state", {})):
-            save_state(state)
-    elif topic == b"replica_event\0":
-        replica = dict(message.get("changes", {}))
-        if message.get("message"):
-            replica["messages"] = [message["message"]]
-        if merge_replica_state(state, replica):
-            save_state(state)
+    elif vtTopico == b"replica_state\0":
+        if uFontesCopia is not None and isinstance(uMensagem.get("source"), str):
+            uFontesCopia.add(uMensagem["source"])
+        if bMesclarEstadoReplica(uEstado, uMensagem.get("state", {})):
+            vSalvarEstado(uEstado)
+    elif vtTopico == b"replica_event\0":
+        uReplica = dict(uMensagem.get("changes", {}))
+        if uMensagem.get("message"):
+            uReplica["messages"] = [uMensagem["message"]]
+        if bMesclarEstadoReplica(uEstado, uReplica):
+            vSalvarEstado(uEstado)
 
 
-def server_request(context, server_name, operation, **fields):
-    peer_socket = context.socket(zmq.REQ)
-    peer_socket.setsockopt(zmq.LINGER, 0)
-    peer_socket.setsockopt(zmq.RCVTIMEO, 2000)
-    peer_socket.setsockopt(zmq.SNDTIMEO, 2000)
-    peer_socket.connect(f"tcp://{server_name}:5561")
+def mSolicitarServidor(uContexto, uNomeServidorLocal, uOperacao, **uCampos):
+    uSocketPar = uContexto.socket(zmq.REQ)
+    uSocketPar.setsockopt(zmq.LINGER, 0)
+    uSocketPar.setsockopt(zmq.RCVTIMEO, 2000)
+    uSocketPar.setsockopt(zmq.SNDTIMEO, 2000)
+    uSocketPar.connect(f"tcp://{uNomeServidorLocal}:5561")
 
-    request = {
-        "op": operation,
-        "name": SERVER_NAME,
-        "timestamp": timestamp(),
-        "logical_clock": next_clock(),
+    uRequisicao = {
+        "op": uOperacao,
+        "name": uNomeServidor,
+        "timestamp": iObterTimestamp(),
+        "logical_clock": iProximoRelogio(),
     }
-    request.update(fields)
+    uRequisicao.update(uCampos)
 
     try:
-        peer_socket.send(msgpack.packb(request, use_bin_type=True))
-        reply = msgpack.unpackb(peer_socket.recv(), raw=False)
-        observe_clock(reply["logical_clock"])
-        return reply
+        uSocketPar.send(msgpack.packb(uRequisicao, use_bin_type=True))
+        uResposta = msgpack.unpackb(uSocketPar.recv(), raw=False)
+        vAtualizarRelogioLogico(uResposta["logical_clock"])
+        return uResposta
     finally:
-        peer_socket.close()
+        uSocketPar.close()
 
 
-def elect_coordinator(context, ref_socket, publisher):
-    global ACTIVE_SERVERS
+def vElegerCoordenador(uContexto, uSocketReferencia, uPublicador):
+    global vtServidoresAtivos
     try:
-        reply = ref_request(ref_socket, "list")
-        if reply.get("ok"):
-            ACTIVE_SERVERS = reply.get("data", {}).get("servers", [])
-            for server in ACTIVE_SERVERS:
-                KNOWN_SERVERS[server["name"]] = server["rank"]
-    except (zmq.error.Again, OSError, KeyError) as error:
-        print(f"[{SERVER_NAME}] falha ao consultar servidores para eleição: {error}", flush=True)
+        uResposta = mSolicitarReferencia(uSocketReferencia, "list")
+        if uResposta.get("ok"):
+            vtServidoresAtivos = uResposta.get("data", {}).get("servers", [])
+            for uServidor in vtServidoresAtivos:
+                uServidoresConhecidos[uServidor["name"]] = uServidor["rank"]
+    except (zmq.error.Again, OSError, KeyError) as uErro:
+        print(f"[{uNomeServidor}] falha ao consultar servidores para eleição: {uErro}", flush=True)
 
-    candidates = [{"name": SERVER_NAME, "rank": SERVER_RANK}]
-    for name, rank in KNOWN_SERVERS.items():
-        if not name or name == SERVER_NAME:
+    vtCandidatos = [{"name": uNomeServidor, "rank": uRankServidor}]
+    for uNome, uRank in uServidoresConhecidos.items():
+        if not uNome or uNome == uNomeServidor:
             continue
 
         try:
-            reply = server_request(
-                context,
-                name,
+            uResposta = mSolicitarServidor(
+                uContexto,
+                uNome,
                 "election",
-                candidate=SERVER_NAME,
-                rank=SERVER_RANK,
+                candidate=uNomeServidor,
+                rank=uRankServidor,
             )
-            if reply.get("ok"):
-                candidates.append(
-                    reply.get(
+            if uResposta.get("ok"):
+                vtCandidatos.append(
+                    uResposta.get(
                         "data",
-                        {"name": name, "rank": rank},
+                        {"name": uNome, "rank": uRank},
                     )
                 )
-                UNAVAILABLE_SERVERS.discard(name)
-        except (zmq.error.ZMQError, OSError, KeyError, ValueError) as error:
-            UNAVAILABLE_SERVERS.add(name)
-            print(f"[{SERVER_NAME}] servidor {name} não respondeu à eleição: {error}", flush=True)
+                uServidoresIndisponiveis.discard(uNome)
+        except (zmq.error.ZMQError, OSError, KeyError, ValueError) as uErro:
+            uServidoresIndisponiveis.add(uNome)
+            print(f"[{uNomeServidor}] servidor {uNome} não respondeu à eleição: {uErro}", flush=True)
 
-    coordinator = max(candidates, key=lambda server: server.get("rank", 0))
-    set_coordinator(
-        coordinator["name"],
-        publisher,
-        announce=True,
+    uCoordenador = max(vtCandidatos, key=lambda uServidor: uServidor.get("rank", 0))
+    vDefinirCoordenador(
+        uCoordenador["name"],
+        uPublicador,
+        uAnunciar=True,
     )
 
 
-def synchronize_clock(context, ref_socket, publisher):
-    if not COORDINATOR_NAME:
-        refresh_coordinator(ref_socket, publisher)
-    if not COORDINATOR_NAME or COORDINATOR_NAME == SERVER_NAME:
+def vSincronizarRelogio(uContexto, uSocketReferencia, uPublicador):
+    if not uNomeCoordenador:
+        vAtualizarCoordenador(uSocketReferencia, uPublicador)
+    if not uNomeCoordenador or uNomeCoordenador == uNomeServidor:
         return
 
-    coordinator = COORDINATOR_NAME
+    uNomeCoordenadorLocal = uNomeCoordenador
     try:
-        reply = server_request(context, coordinator, "clock")
-        if not reply.get("ok"):
-            raise OSError(reply.get("message", "Coordenador indisponível"))
+        uResposta = mSolicitarServidor(uContexto, uNomeCoordenadorLocal, "clock")
+        if not uResposta.get("ok"):
+            raise OSError(uResposta.get("message", "Coordenador indisponível"))
 
-        global CLOCK_OFFSET
-        correct_time = reply["data"]["time"]
-        CLOCK_OFFSET = correct_time - int(time.time() * 1000)
-        UNAVAILABLE_SERVERS.discard(coordinator)
-        print(f"[{SERVER_NAME}] relógio sincronizado com {coordinator}", flush=True)
-    except (zmq.error.ZMQError, OSError, KeyError, ValueError) as error:
-        UNAVAILABLE_SERVERS.add(coordinator)
-        print(f"[{SERVER_NAME}] coordenador {coordinator} indisponível: {error}", flush=True)
-        elect_coordinator(context, ref_socket, publisher)
+        global uDesvioRelogio
+        uHoraCorreta = uResposta["data"]["time"]
+        uDesvioRelogio = uHoraCorreta - int(time.time() * 1000)
+        uServidoresIndisponiveis.discard(uNomeCoordenadorLocal)
+        print(f"[{uNomeServidor}] relógio sincronizado com {uNomeCoordenadorLocal}", flush=True)
+    except (zmq.error.ZMQError, OSError, KeyError, ValueError) as uErro:
+        uServidoresIndisponiveis.add(uNomeCoordenadorLocal)
+        print(f"[{uNomeServidor}] coordenador {uNomeCoordenadorLocal} indisponível: {uErro}", flush=True)
+        vElegerCoordenador(uContexto, uSocketReferencia, uPublicador)
 
 
-def main():
-    global SERVER_RANK
-    state = load_state()
-    context = zmq.Context()
-    client_socket = context.socket(zmq.REP)
-    peer_socket = context.socket(zmq.REP)
-    publisher = context.socket(zmq.PUB)
-    subscriber = context.socket(zmq.SUB)
-    ref_socket = context.socket(zmq.REQ)
-    client_socket.setsockopt(zmq.LINGER, 0)
-    peer_socket.setsockopt(zmq.LINGER, 0)
-    publisher.setsockopt(zmq.LINGER, 0)
-    subscriber.setsockopt(zmq.LINGER, 0)
-    ref_socket.setsockopt(zmq.LINGER, 0)
-    ref_socket.setsockopt(zmq.RCVTIMEO, 3000)
-    subscriber.setsockopt(zmq.SUBSCRIBE, b"servers")
-    subscriber.setsockopt(zmq.SUBSCRIBE, b"replica")
-    ref_socket.connect(REF_URL)
-    registration = ref_request(ref_socket, "rank")
-    rank = registration["data"]["rank"]
-    SERVER_RANK = rank
-    peer_socket.bind("tcp://*:5561")
-    publisher.connect(os.getenv("PROXY_PUB_URL", "tcp://proxy:5557"))
-    subscriber.connect(PROXY_SUB_URL)
+def vExecutarServidor():
+    global uRankServidor
+    uEstado = mCarregarEstado()
+    uContexto = zmq.Context()
+    uSocketCliente = uContexto.socket(zmq.REP)
+    uSocketPar = uContexto.socket(zmq.REP)
+    uPublicador = uContexto.socket(zmq.PUB)
+    uAssinante = uContexto.socket(zmq.SUB)
+    uSocketReferencia = uContexto.socket(zmq.REQ)
+    uSocketCliente.setsockopt(zmq.LINGER, 0)
+    uSocketPar.setsockopt(zmq.LINGER, 0)
+    uPublicador.setsockopt(zmq.LINGER, 0)
+    uAssinante.setsockopt(zmq.LINGER, 0)
+    uSocketReferencia.setsockopt(zmq.LINGER, 0)
+    uSocketReferencia.setsockopt(zmq.RCVTIMEO, 3000)
+    uAssinante.setsockopt(zmq.SUBSCRIBE, b"servers")
+    uAssinante.setsockopt(zmq.SUBSCRIBE, b"replica")
+    uSocketReferencia.connect(uUrlReferencia)
+    uRegistro = mSolicitarReferencia(uSocketReferencia, "rank")
+    uRank = uRegistro["data"]["rank"]
+    uRankServidor = uRank
+    uSocketPar.bind("tcp://*:5561")
+    uPublicador.connect(os.getenv("PROXY_PUB_URL", "tcp://proxy:5557"))
+    uAssinante.connect(uUrlProxyAssinante)
     time.sleep(0.5)
-    refresh_coordinator(ref_socket, publisher, announce=True)
-    request_replica_snapshot(publisher)
-    expected_sources = {
-        server["name"]
-        for server in ACTIVE_SERVERS
-        if server.get("name") != SERVER_NAME
+    vAtualizarCoordenador(uSocketReferencia, uPublicador, uAnunciar=True)
+    vSolicitarCopiaEstado(uPublicador)
+    uFontesEsperadas = {
+        uServidor["name"]
+        for uServidor in vtServidoresAtivos
+        if uServidor.get("name") != uNomeServidor
     }
-    snapshot_sources = set()
-    sync_started = time.monotonic()
-    sync_deadline = sync_started + 5
-    while time.monotonic() < sync_deadline:
-        minimum_wait_finished = time.monotonic() >= sync_started + 1
-        all_servers_replied = expected_sources.issubset(snapshot_sources)
-        if minimum_wait_finished and all_servers_replied:
+    uFontesCopia = set()
+    uInicioSincronizacao = time.monotonic()
+    uPrazoSincronizacao = uInicioSincronizacao + 5
+    while time.monotonic() < uPrazoSincronizacao:
+        uEsperaMinimaFinalizada = time.monotonic() >= uInicioSincronizacao + 1
+        uTodosResponderam = uFontesEsperadas.issubset(uFontesCopia)
+        if uEsperaMinimaFinalizada and uTodosResponderam:
             break
-        if subscriber.poll(100) == zmq.POLLIN:
-            receive_pub_message(subscriber, publisher, state, snapshot_sources)
-    client_socket.connect(BROKER_URL)
+        if uAssinante.poll(100) == zmq.POLLIN:
+            vReceberMensagemPubSub(uAssinante, uPublicador, uEstado, uFontesCopia)
+    uSocketCliente.connect(uUrlBroker)
 
-    poller = zmq.Poller()
-    poller.register(client_socket, zmq.POLLIN)
-    poller.register(peer_socket, zmq.POLLIN)
-    poller.register(subscriber, zmq.POLLIN)
-    print(f"[{SERVER_NAME}] rank {rank}, conectado ao broker", flush=True)
-    received_messages = 0
+    uPoller = zmq.Poller()
+    uPoller.register(uSocketCliente, zmq.POLLIN)
+    uPoller.register(uSocketPar, zmq.POLLIN)
+    uPoller.register(uAssinante, zmq.POLLIN)
+    print(f"[{uNomeServidor}] rank {uRank}, conectado ao broker", flush=True)
+    uPedidosRecebidos = 0
 
     try:
         while True:
-            events = dict(poller.poll())
-            if events.get(subscriber) == zmq.POLLIN:
-                receive_pub_message(subscriber, publisher, state)
-            for socket in (client_socket, peer_socket):
-                if events.get(socket) != zmq.POLLIN:
+            uEventos = dict(uPoller.poll())
+            if uEventos.get(uAssinante) == zmq.POLLIN:
+                vReceberMensagemPubSub(uAssinante, uPublicador, uEstado)
+            for uSocket in (uSocketCliente, uSocketPar):
+                if uEventos.get(uSocket) != zmq.POLLIN:
                     continue
 
-                client_request = socket is client_socket
-                raw_message = socket.recv()
-                request = None
-                old_lengths = None
+                uPedidoCliente = uSocket is uSocketCliente
+                vtMensagemBruta = uSocket.recv()
+                uRequisicao = None
+                uTamanhosAntigos = None
                 try:
-                    request = msgpack.unpackb(raw_message, raw=False)
-                    if isinstance(request, dict):
-                        old_lengths = {
-                            name: len(state[name])
-                            for name in ("users", "logins", "channels", "publications")
+                    uRequisicao = msgpack.unpackb(vtMensagemBruta, raw=False)
+                    if isinstance(uRequisicao, dict):
+                        uTamanhosAntigos = {
+                            uNome: len(uEstado[uNome])
+                            for uNome in ("users", "logins", "channels", "publications")
                         }
-                    if isinstance(request, dict) and isinstance(request.get("logical_clock"), int):
-                        observe_clock(request["logical_clock"])
-                    print_message("recebido", request)
-                    result = process_request(request, state, publisher)
-                except (msgpack.UnpackException, ValueError, TypeError) as error:
-                    result = response(False, f"Mensagem invalida: {error}")
+                    if isinstance(uRequisicao, dict) and isinstance(uRequisicao.get("logical_clock"), int):
+                        vAtualizarRelogioLogico(uRequisicao["logical_clock"])
+                    vExibirMensagem("recebido", uRequisicao)
+                    uResultado = mProcessarPedido(uRequisicao, uEstado, uPublicador)
+                except (msgpack.UnpackException, ValueError, TypeError) as uErro:
+                    uResultado = mCriarResposta(False, f"Mensagem invalida: {uErro}")
 
-                internal_request = (
-                    isinstance(request, dict)
-                    and request.get("op") in ("clock", "election")
+                uPedidoInterno = (
+                    isinstance(uRequisicao, dict)
+                    and uRequisicao.get("op") in ("clock", "election")
                 )
-                replication_event = None
-                if isinstance(request, dict) and not internal_request:
-                    event_id = f"{SERVER_NAME}:{uuid.uuid4().hex}"
-                    if request.get("op") == "publish" and result.get("ok"):
-                        result["data"]["event_id"] = event_id
-                        if len(state["publications"]) > old_lengths["publications"]:
-                            state["publications"][-1]["event_id"] = event_id
+                uEventoReplica = None
+                if isinstance(uRequisicao, dict) and not uPedidoInterno:
+                    uIdEvento = f"{uNomeServidor}:{uuid.uuid4().hex}"
+                    if uRequisicao.get("op") == "publish" and uResultado.get("ok"):
+                        uResultado["data"]["event_id"] = uIdEvento
+                        if len(uEstado["publications"]) > uTamanhosAntigos["publications"]:
+                            uEstado["publications"][-1]["event_id"] = uIdEvento
 
-                    message_entry = {
-                        "event_id": event_id,
-                        "request": request,
-                        "response": result,
+                    uRegistroMensagem = {
+                        "event_id": uIdEvento,
+                        "request": uRequisicao,
+                        "response": uResultado,
                     }
-                    state["messages"].append(message_entry)
-                    changes = {
-                        name: state[name][old_lengths[name]:]
-                        for name in ("users", "logins", "channels", "publications")
+                    uEstado["messages"].append(uRegistroMensagem)
+                    uAlteracoes = {
+                        uNome: uEstado[uNome][uTamanhosAntigos[uNome]:]
+                        for uNome in ("users", "logins", "channels", "publications")
                     }
-                    replication_event = {
-                        "source": SERVER_NAME,
-                        "changes": changes,
-                        "message": message_entry,
+                    uEventoReplica = {
+                        "source": uNomeServidor,
+                        "changes": uAlteracoes,
+                        "message": uRegistroMensagem,
                     }
-                    save_state(state)
-                print_message("enviado", result)
-                socket.send(msgpack.packb(result, use_bin_type=True))
-                if replication_event is not None:
-                    publish_replica_event(publisher, replication_event)
+                    vSalvarEstado(uEstado)
+                vExibirMensagem("enviado", uResultado)
+                uSocket.send(msgpack.packb(uResultado, use_bin_type=True))
+                if uEventoReplica is not None:
+                    vPublicarEventoReplica(uPublicador, uEventoReplica)
 
-                if client_request and not internal_request:
-                    received_messages += 1
-                if client_request and received_messages % HEARTBEAT_INTERVAL == 0:
-                    send_heartbeat(ref_socket, rank)
-                    refresh_coordinator(ref_socket, publisher, announce=True)
-                if client_request and received_messages % SYNC_INTERVAL == 0:
-                    synchronize_clock(context, ref_socket, publisher)
-                    request_replica_snapshot(publisher)
+                if uPedidoCliente and not uPedidoInterno:
+                    uPedidosRecebidos += 1
+                if uPedidoCliente and uPedidosRecebidos % uIntervaloHeartbeat == 0:
+                    vEnviarHeartbeat(uSocketReferencia, uRank)
+                    vAtualizarCoordenador(uSocketReferencia, uPublicador, uAnunciar=True)
+                if uPedidoCliente and uPedidosRecebidos % uIntervaloSincronizacao == 0:
+                    vSincronizarRelogio(uContexto, uSocketReferencia, uPublicador)
+                    vSolicitarCopiaEstado(uPublicador)
     finally:
-        client_socket.close()
-        peer_socket.close()
-        publisher.close()
-        subscriber.close()
-        ref_socket.close()
-        context.term()
+        uSocketCliente.close()
+        uSocketPar.close()
+        uPublicador.close()
+        uAssinante.close()
+        uSocketReferencia.close()
+        uContexto.term()
 
 
 if __name__ == "__main__":
-    main()
+    vExecutarServidor()

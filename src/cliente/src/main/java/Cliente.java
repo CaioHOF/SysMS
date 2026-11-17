@@ -20,162 +20,166 @@ import org.zeromq.ZContext;
 import org.zeromq.ZMQ;
 
 public class Cliente {
-    private static final int TIMEOUT_MS = 10000;
-    private static final Random random = new Random();
-    private static final AtomicLong logicalClock = new AtomicLong();
+    private static final int uTempoLimiteMs = 10000;
+    private static final Random uAleatorio = new Random();
+    private static final AtomicLong uRelogioLogico = new AtomicLong();
 
-    public static void main(String[] args) {
-        String username = environment("BOT_NAME", "ana");
-        String brokerUrl = environment("BROKER_URL", "tcp://broker:5555");
-        String proxyUrl = environment("PROXY_SUB_URL", "tcp://proxy:5558");
+    public static void main(String[] vtArgumentos) {
+        vExecutarBot();
+    }
 
-        try (ZContext context = new ZContext()) {
-            List<String> channels = new ArrayList<>();
+    private static void vExecutarBot() {
+        String uNomeUsuario = sLerVariavelAmbiente("BOT_NAME", "ana");
+        String uUrlBroker = sLerVariavelAmbiente("BROKER_URL", "tcp://broker:5555");
+        String uUrlProxy = sLerVariavelAmbiente("PROXY_SUB_URL", "tcp://proxy:5558");
 
-            ZMQ.Socket server = context.createSocket(SocketType.REQ);
-            server.setLinger(0);
-            server.setReceiveTimeOut(TIMEOUT_MS);
-            server.setSendTimeOut(TIMEOUT_MS);
-            server.connect(brokerUrl);
+        try (ZContext uContexto = new ZContext()) {
+            List<String> vtCanais = new ArrayList<>();
 
-            request(server, brokerUrl, username, "login", null, null);
-            channels = listChannels(server, brokerUrl, username);
-            while (channels.size() < 5) {
-                int number = 1;
-                while (channels.contains("canal-" + number)) {
-                    number++;
+            ZMQ.Socket uSocketServidor = uContexto.createSocket(SocketType.REQ);
+            uSocketServidor.setLinger(0);
+            uSocketServidor.setReceiveTimeOut(uTempoLimiteMs);
+            uSocketServidor.setSendTimeOut(uTempoLimiteMs);
+            uSocketServidor.connect(uUrlBroker);
+
+            mEnviarPedido(uSocketServidor, uUrlBroker, uNomeUsuario, "login", null, null);
+            vtCanais = vtListarCanais(uSocketServidor, uUrlBroker, uNomeUsuario);
+            while (vtCanais.size() < 5) {
+                int uNumeroCanal = 1;
+                while (vtCanais.contains("canal-" + uNumeroCanal)) {
+                    uNumeroCanal++;
                 }
-                request(server, brokerUrl, username, "create_channel",
-                        "canal-" + number, null);
-                channels = listChannels(server, brokerUrl, username);
+                mEnviarPedido(uSocketServidor, uUrlBroker, uNomeUsuario, "create_channel",
+                        "canal-" + uNumeroCanal, null);
+                vtCanais = vtListarCanais(uSocketServidor, uUrlBroker, uNomeUsuario);
             }
 
-            Collections.shuffle(channels, random);
-            List<String> subscriptions = new ArrayList<>(
-                    channels.subList(0, Math.min(3, channels.size())));
-            System.out.println("[" + username + "] inscritos em: " + subscriptions);
+            Collections.shuffle(vtCanais, uAleatorio);
+            List<String> vtInscricoes = new ArrayList<>(
+                    vtCanais.subList(0, Math.min(3, vtCanais.size())));
+            System.out.println("[" + uNomeUsuario + "] inscritos em: " + vtInscricoes);
 
-            CountDownLatch subscribed = new CountDownLatch(1);
-            Thread listener = new Thread(() -> receiveMessages(
-                    proxyUrl, subscriptions, username, subscribed));
-            listener.setDaemon(true);
-            listener.start();
-            subscribed.await();
+            CountDownLatch uAvisoInscricao = new CountDownLatch(1);
+            Thread uThreadRecebedora = new Thread(() -> vReceberMensagens(
+                    uUrlProxy, vtInscricoes, uNomeUsuario, uAvisoInscricao));
+            uThreadRecebedora.setDaemon(true);
+            uThreadRecebedora.start();
+            uAvisoInscricao.await();
             Thread.sleep(1000);
 
-            long counter = 1;
+            long uContadorMensagens = 1;
             while (true) {
-                for (int i = 0; i < 10; i++) {
-                    String channel = channels.get(random.nextInt(channels.size()));
-                    String text = "mensagem-" + random.nextInt(1000);
-                    request(server, brokerUrl, username,
-                            "publish", channel, text);
-                    System.out.println("[" + username + "] enviada " + counter++
-                            + " em #" + channel);
+                for (int uIndice = 0; uIndice < 10; uIndice++) {
+                    String uCanal = vtCanais.get(uAleatorio.nextInt(vtCanais.size()));
+                    String uTexto = "mensagem-" + uAleatorio.nextInt(1000);
+                    mEnviarPedido(uSocketServidor, uUrlBroker, uNomeUsuario,
+                            "publish", uCanal, uTexto);
+                    System.out.println("[" + uNomeUsuario + "] enviada " + uContadorMensagens++
+                            + " em #" + uCanal);
                     Thread.sleep(1000);
                 }
             }
-        } catch (Exception error) {
-            System.err.println("Falha no bot: " + error.getMessage());
+        } catch (Exception uErro) {
+            System.err.println("Falha no bot: " + uErro.getMessage());
             System.exit(1);
         }
     }
 
-    private static List<String> listChannels(
-            ZMQ.Socket socket, String endpoint, String username) throws IOException {
-        Map<Value, Value> reply = request(
-                socket, endpoint, username, "list_channels", null, null);
-        MapValue data = field(reply, "data").asMapValue();
-        ArrayValue values = field(data.map(), "channels").asArrayValue();
-        List<String> channels = new ArrayList<>();
-        for (Value value : values) {
-            channels.add(value.asStringValue().asString());
+    private static List<String> vtListarCanais(
+            ZMQ.Socket uSocket, String uEndereco, String uNomeUsuario) throws IOException {
+        Map<Value, Value> uResposta = mEnviarPedido(
+                uSocket, uEndereco, uNomeUsuario, "list_channels", null, null);
+        MapValue uDados = valObterCampo(uResposta, "data").asMapValue();
+        ArrayValue vtValores = valObterCampo(uDados.map(), "channels").asArrayValue();
+        List<String> vtCanais = new ArrayList<>();
+        for (Value uValor : vtValores) {
+            vtCanais.add(uValor.asStringValue().asString());
         }
-        return channels;
+        return vtCanais;
     }
 
-    private static Map<Value, Value> request(
-            ZMQ.Socket socket, String endpoint, String username, String operation,
-            String channel, String text) throws IOException {
-        Map<String, Object> message = new LinkedHashMap<>();
-        message.put("op", operation);
-        message.put("username", username);
-        if (channel != null) message.put("channel", channel);
-        if (text != null) message.put("message", text);
-        message.put("timestamp", Instant.now().toEpochMilli());
-        message.put("logical_clock", logicalClock.incrementAndGet());
+    private static Map<Value, Value> mEnviarPedido(
+            ZMQ.Socket uSocket, String uEndereco, String uNomeUsuario, String uOperacao,
+            String uCanal, String uTexto) throws IOException {
+        Map<String, Object> uMensagem = new LinkedHashMap<>();
+        uMensagem.put("op", uOperacao);
+        uMensagem.put("username", uNomeUsuario);
+        if (uCanal != null) uMensagem.put("channel", uCanal);
+        if (uTexto != null) uMensagem.put("message", uTexto);
+        uMensagem.put("timestamp", Instant.now().toEpochMilli());
+        uMensagem.put("logical_clock", uRelogioLogico.incrementAndGet());
 
-        System.out.println("[" + username + " -> " + endpoint + "] enviado: " + message);
-        socket.send(pack(message), 0);
-        byte[] bytes = socket.recv(0);
-        if (bytes == null) throw new IOException("o servidor não respondeu");
+        System.out.println("[" + uNomeUsuario + " -> " + uEndereco + "] enviado: " + uMensagem);
+        uSocket.send(vtEmpacotarMensagem(uMensagem), 0);
+        byte[] vtBytesResposta = uSocket.recv(0);
+        if (vtBytesResposta == null) throw new IOException("o servidor não respondeu");
 
-        Value response = MessagePack.newDefaultUnpacker(bytes).unpackValue();
-        Map<Value, Value> fields = response.asMapValue().map();
-        long receivedClock = field(fields, "logical_clock").asIntegerValue().asLong();
-        logicalClock.updateAndGet(current -> Math.max(current, receivedClock));
-        System.out.println("[" + endpoint + " -> " + username + "] recebido: " + response);
-        if (!field(fields, "ok").asBooleanValue().getBoolean()) {
-            throw new IOException(field(fields, "message").toString());
+        Value uResposta = MessagePack.newDefaultUnpacker(vtBytesResposta).unpackValue();
+        Map<Value, Value> uCampos = uResposta.asMapValue().map();
+        long uRelogioRecebido = valObterCampo(uCampos, "logical_clock").asIntegerValue().asLong();
+        uRelogioLogico.updateAndGet(uAtual -> Math.max(uAtual, uRelogioRecebido));
+        System.out.println("[" + uEndereco + " -> " + uNomeUsuario + "] recebido: " + uResposta);
+        if (!valObterCampo(uCampos, "ok").asBooleanValue().getBoolean()) {
+            throw new IOException(valObterCampo(uCampos, "message").toString());
         }
-        return fields;
+        return uCampos;
     }
 
-    private static void receiveMessages(
-            String proxyUrl, List<String> channels, String username, CountDownLatch ready) {
-        try (ZContext context = new ZContext()) {
-            ZMQ.Socket subscriber = context.createSocket(SocketType.SUB);
-            subscriber.setLinger(0);
-            subscriber.connect(proxyUrl);
-            for (String channel : channels) {
-                subscriber.subscribe((channel + "\0").getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    private static void vReceberMensagens(
+            String uUrlProxy, List<String> vtCanais, String uNomeUsuario, CountDownLatch uSinalPronto) {
+        try (ZContext uContexto = new ZContext()) {
+            ZMQ.Socket uSocketAssinante = uContexto.createSocket(SocketType.SUB);
+            uSocketAssinante.setLinger(0);
+            uSocketAssinante.connect(uUrlProxy);
+            for (String uCanal : vtCanais) {
+                uSocketAssinante.subscribe((uCanal + "\0").getBytes(java.nio.charset.StandardCharsets.UTF_8));
             }
-            ready.countDown();
+            uSinalPronto.countDown();
 
             while (true) {
-                subscriber.recv(0);
-                byte[] payload = subscriber.recv(0);
-                Map<Value, Value> publication = MessagePack.newDefaultUnpacker(payload)
+                uSocketAssinante.recv(0);
+                byte[] vtConteudo = uSocketAssinante.recv(0);
+                Map<Value, Value> uPublicacao = MessagePack.newDefaultUnpacker(vtConteudo)
                         .unpackValue().asMapValue().map();
-                long receivedClock = field(publication, "logical_clock").asIntegerValue().asLong();
-                logicalClock.updateAndGet(current -> Math.max(current, receivedClock));
-                long receivedAt = Instant.now().toEpochMilli();
-                System.out.println("[" + username + " recebeu] remetente="
-                        + field(publication, "username").asStringValue().asString()
-                        + " canal=#" + field(publication, "channel").asStringValue().asString()
-                        + " mensagem=" + field(publication, "message").asStringValue().asString()
-                        + " timestamp=" + field(publication, "timestamp").asIntegerValue().asLong()
-                        + " enviada=" + field(publication, "sent_at").asIntegerValue().asLong()
+                long uRelogioRecebido = valObterCampo(uPublicacao, "logical_clock").asIntegerValue().asLong();
+                uRelogioLogico.updateAndGet(uAtual -> Math.max(uAtual, uRelogioRecebido));
+                long uHorarioRecebido = Instant.now().toEpochMilli();
+                System.out.println("[" + uNomeUsuario + " recebeu] remetente="
+                        + valObterCampo(uPublicacao, "username").asStringValue().asString()
+                        + " canal=#" + valObterCampo(uPublicacao, "channel").asStringValue().asString()
+                        + " mensagem=" + valObterCampo(uPublicacao, "message").asStringValue().asString()
+                        + " timestamp=" + valObterCampo(uPublicacao, "timestamp").asIntegerValue().asLong()
+                        + " enviada=" + valObterCampo(uPublicacao, "sent_at").asIntegerValue().asLong()
                         + " recebida_servidor="
-                        + field(publication, "received_at").asIntegerValue().asLong()
-                        + " relogio_logico=" + receivedClock
-                        + " recebida_cliente=" + receivedAt);
+                        + valObterCampo(uPublicacao, "received_at").asIntegerValue().asLong()
+                        + " relogio_logico=" + uRelogioRecebido
+                        + " recebida_cliente=" + uHorarioRecebido);
             }
-        } catch (Exception error) {
-            System.err.println("Falha ao receber publicação: " + error.getMessage());
-            ready.countDown();
+        } catch (Exception uErro) {
+            System.err.println("Falha ao receber publicação: " + uErro.getMessage());
+            uSinalPronto.countDown();
         }
     }
 
-    private static byte[] pack(Map<String, Object> message) throws IOException {
-        MessageBufferPacker packer = MessagePack.newDefaultBufferPacker();
-        packer.packMapHeader(message.size());
-        for (Map.Entry<String, Object> item : message.entrySet()) {
-            packer.packString(item.getKey());
-            if (item.getValue() instanceof String text) packer.packString(text);
-            else if (item.getValue() instanceof Long number) packer.packLong(number);
+    private static byte[] vtEmpacotarMensagem(Map<String, Object> uMensagem) throws IOException {
+        MessageBufferPacker uEmpacotador = MessagePack.newDefaultBufferPacker();
+        uEmpacotador.packMapHeader(uMensagem.size());
+        for (Map.Entry<String, Object> uItem : uMensagem.entrySet()) {
+            uEmpacotador.packString(uItem.getKey());
+            if (uItem.getValue() instanceof String uTexto) uEmpacotador.packString(uTexto);
+            else if (uItem.getValue() instanceof Long uNumeroCanal) uEmpacotador.packLong(uNumeroCanal);
         }
-        return packer.toByteArray();
+        return uEmpacotador.toByteArray();
     }
 
-    private static Value field(Map<Value, Value> map, String name) throws IOException {
-        Value value = map.get(ValueFactory.newString(name));
-        if (value == null || value.isNilValue()) throw new IOException("campo ausente: " + name);
-        return value;
+    private static Value valObterCampo(Map<Value, Value> uMapa, String uNomeCampo) throws IOException {
+        Value uValor = uMapa.get(ValueFactory.newString(uNomeCampo));
+        if (uValor == null || uValor.isNilValue()) throw new IOException("campo ausente: " + uNomeCampo);
+        return uValor;
     }
 
-    private static String environment(String name, String fallback) {
-        String value = System.getenv(name);
-        return value == null || value.isBlank() ? fallback : value;
+    private static String sLerVariavelAmbiente(String uNomeCampo, String uValorPadrao) {
+        String uValor = System.getenv(uNomeCampo);
+        return uValor == null || uValor.isBlank() ? uValorPadrao : uValor;
     }
 }
