@@ -29,10 +29,11 @@ def mCriarResposta(uSucesso, uMensagemResposta, uDados=None):
         uResultado["data"] = uDados
     return uResultado
 
-
+# devolve a lista dos servidores que ainda enviam heartbeats dentro do prazo
 def vtListarServidoresAtivos():
     uAgora = time.monotonic()
     for uNome, uUltimoSinal in list(uUltimoHeartbeat.items()):
+        # remove o heartbeat se o servidor ultrapassou o tempo limite
         if uAgora - uUltimoSinal > uTimeoutHeartbeat:
             del uUltimoHeartbeat[uNome]
     return sorted(
@@ -54,20 +55,23 @@ def mProcessarPedido(uRequisicao):
     uRelogioLogico = max(uRelogioLogico, uRequisicao["logical_clock"])
     uOperacao = uRequisicao.get("op")
     uNome = uRequisicao.get("name")
-
+    
+    # Se a operação for "list" ele devolve os servidores ativos.
     if uOperacao == "list":
         return mCriarResposta(True, "Servidores disponíveis", {"servers": vtListarServidoresAtivos()})
 
     if not isinstance(uNome, str) or not uNome:
         return mCriarResposta(False, "Nome do servidor inválido")
 
+    # Processa o pedido para registrar ou obter o rank de um servidor
     if uOperacao == "rank":
         if uNome not in uServidoresRegistrados:
             uServidoresRegistrados[uNome] = uProximoRank
             uProximoRank += 1
         uUltimoHeartbeat[uNome] = time.monotonic()
         return mCriarResposta(True, "Rank do servidor", {"rank": uServidoresRegistrados[uNome]})
-
+    
+    # processa o heartbeat periodico enviado por um servidor
     if uOperacao == "heartbeat":
         if uNome not in uServidoresRegistrados or uRequisicao.get("rank") != uServidoresRegistrados[uNome]:
             return mCriarResposta(False, "Servidor não registrado")
@@ -76,7 +80,7 @@ def mProcessarPedido(uRequisicao):
 
     return mCriarResposta(False, "Operação desconhecida")
 
-
+#é a main do ref
 def vExecutarRef():
     uContexto = zmq.Context()
     uSocket = uContexto.socket(zmq.REP)

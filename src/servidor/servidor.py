@@ -42,7 +42,7 @@ def iObterTimestamp():
 def mCriarEstadoVazio():
     return {"users": [], "logins": [], "channels": [], "messages": [], "publications": []}
 
-
+# Carrega os dados persistidos em disco ou cria um estado vazio se nã otiver nada
 def mCarregarEstado():
     uArquivoDados.parent.mkdir(parents=True, exist_ok=True)
     if not uArquivoDados.exists():
@@ -89,13 +89,15 @@ def mProcessarPedido(uRequisicao, uEstado, uPublicador):
 
     uOperacao = uRequisicao.get("op")
 
+    # responde a pedidos usados na eleição do coordenador
     if uOperacao == "election":
         return mCriarResposta(
             True,
             "OK",
             {"name": uNomeServidor, "rank": uRankServidor},
         )
-
+        
+    # coordenador responde a pedidos de sincronização de relógio.
     if uOperacao == "clock":
         global uDesvioRelogio
         if uNomeCoordenador != uNomeServidor:
@@ -104,7 +106,8 @@ def mProcessarPedido(uRequisicao, uEstado, uPublicador):
         uHoraCorreta = (uRequisicao["timestamp"] + iObterTimestamp()) // 2
         uDesvioRelogio = uHoraCorreta - int(time.time() * 1000)
         return mCriarResposta(True, "Hora correta", {"time": uHoraCorreta})
-
+    
+    # Trata o login do usuário.
     if uOperacao == "login":
         uNomeUsuario = uRequisicao.get("username")
         if not isinstance(uNomeUsuario, str) or not uNomeUsuario.strip():
@@ -124,10 +127,12 @@ def mProcessarPedido(uRequisicao, uEstado, uPublicador):
     if not isinstance(uNomeUsuario, str) or uNomeUsuario not in uEstado["users"]:
         return mCriarResposta(False, "Faça login antes de usar esta operação")
 
+    # retorna a lista de canais existentes
     if uOperacao == "list_channels":
         vtCanais = sorted(uCanal["name"] for uCanal in uEstado["channels"])
         return mCriarResposta(True, "Canais disponiveis", {"channels": vtCanais})
-
+    
+    # retorna o historico de mensagens
     if uOperacao == "list_messages":
         uNomeCanal = uRequisicao.get("channel")
         vtMensagens = uEstado["publications"]
@@ -136,6 +141,7 @@ def mProcessarPedido(uRequisicao, uEstado, uPublicador):
                 uMensagem for uMensagem in vtMensagens
                 if uMensagem["channel"] == uNomeCanal
             ]
+        # ordena o historico por horario e em caso de empate por outros campos
         vtMensagens = sorted(
             vtMensagens,
             key=lambda uMensagem: (
@@ -151,6 +157,8 @@ def mProcessarPedido(uRequisicao, uEstado, uPublicador):
             return mCriarResposta(False, "O offset do historico precisa ser positivo")
         if not isinstance(uLimite, int) or uLimite < 1:
             return mCriarResposta(False, "O limite do historico precisa ser positivo")
+        
+         # Limita a resposta a no máximo cem mensagens
         uLimite = min(uLimite, 100)
         return mCriarResposta(
             True,
@@ -162,7 +170,7 @@ def mProcessarPedido(uRequisicao, uEstado, uPublicador):
                 "more": uDeslocamento + uLimite < len(vtMensagens),
             },
         )
-
+    # usado para pedidos de criação de canal
     if uOperacao == "create_channel":
         uNomeCanal = uRequisicao.get("channel")
         if not isinstance(uNomeCanal, str):
@@ -188,6 +196,7 @@ def mProcessarPedido(uRequisicao, uEstado, uPublicador):
             )
 
         uHorarioCriacao = iObterTimestamp()
+        # adiciona o novo canal ao estado
         uEstado["channels"].append(
             {
                 "name": uNomeCanal,
@@ -200,7 +209,6 @@ def mProcessarPedido(uRequisicao, uEstado, uPublicador):
             "Canal criado",
             {"channel": uNomeCanal, "created": True},
         )
-
     if uOperacao == "publish":
         uNomeCanal = uRequisicao.get("channel")
         uTextoMensagem = uRequisicao.get("message")
@@ -220,6 +228,7 @@ def mProcessarPedido(uRequisicao, uEstado, uPublicador):
             "received_at": iObterTimestamp(),
             "logical_clock": iProximoRelogio(),
         }
+        # cria o topico Pub/Sub com o nome do canal
         vtTopico = (uNomeCanal + "\0").encode("utf-8")
         uPublicador.send_multipart(
             [vtTopico, msgpack.packb(uPublicacao, use_bin_type=True)]
@@ -251,6 +260,7 @@ def mSolicitarReferencia(uSocket, uOperacao, **uCampos):
 
 def vEnviarHeartbeat(uSocket, uRank):
     try:
+        # Solicita ao serviço de ref que atualize o heartbeat
         uResposta = mSolicitarReferencia(uSocket, "heartbeat", rank=uRank)
         if uResposta.get("ok"):
             print(f"[{uNomeServidor}] heartbeat; rank={uRank}", flush=True)
@@ -259,7 +269,7 @@ def vEnviarHeartbeat(uSocket, uRank):
     except (zmq.error.Again, OSError, KeyError) as uErro:
         print(f"[{uNomeServidor}] falha no heartbeat: {uErro}", flush=True)
 
-
+# anuncia por Pub/Sub qual servidor está atuando como coordenador
 def vAnunciarCoordenador(uPublicador, uNome):
     uPublicador.send_multipart(
         [
@@ -274,19 +284,21 @@ def vAnunciarCoordenador(uPublicador, uNome):
             ),
         ]
     )
+    # Exibe o anuncio no log do servidor.
     print(f"[{uNomeServidor}] coordenador anunciado: {uNome}", flush=True)
 
-
+# atualiza o coordenador local e se solicitado anuncia a mudança
 def vDefinirCoordenador(uNome, uPublicador, uAnunciar=False):
     global uNomeCoordenador
     uAlterado = uNome != uNomeCoordenador
     uNomeCoordenador = uNome
+    # Registra a mudança no log.
     if uAlterado:
         print(f"[{uNomeServidor}] coordenador: {uNomeCoordenador}", flush=True)
     if uAnunciar:
         vAnunciarCoordenador(uPublicador, uNome)
 
-
+# Atualiza a lista de servidores ativos e escolhe um coordenador
 def vAtualizarCoordenador(uSocketReferencia, uPublicador, uAnunciar=False):
     global vtServidoresAtivos
     try:
