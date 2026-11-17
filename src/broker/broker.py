@@ -9,7 +9,7 @@ servers.setsockopt(zmq.LINGER, 0)
 clients.bind("tcp://*:5555")
 servers.bind("tcp://*:5556")
 
-print("Broker Req-Rep aguardando clientes e servidores", flush=True)
+print("...Broker Req-Rep aguardando clientes e servidores...", flush=True)
 
 try:
     zmq.proxy(clients, servers)
