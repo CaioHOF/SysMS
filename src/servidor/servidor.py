@@ -1,6 +1,7 @@
 import json
 import os
 import time
+import uuid
 from pathlib import Path
 
 import msgpack
@@ -268,21 +269,106 @@ def refresh_coordinator(ref_socket, publisher, announce=False):
         set_coordinator(coordinator["name"], publisher, announce=announce)
 
 
-def receive_coordinator(subscriber):
+def replica_item_key(item):
+    if isinstance(item, dict) and item.get("event_id"):
+        return item["event_id"]
+    return json.dumps(item, ensure_ascii=False, sort_keys=True)
+
+
+def merge_items(destination, received, key_function):
+    keys = {key_function(item) for item in destination}
+    changed = False
+    for item in received:
+        key = key_function(item)
+        if key not in keys:
+            destination.append(item)
+            keys.add(key)
+            changed = True
+    return changed
+
+
+def merge_channels(destination, received):
+    positions = {channel["name"]: index for index, channel in enumerate(destination)}
+    changed = False
+    for channel in received:
+        name = channel["name"]
+        if name not in positions:
+            positions[name] = len(destination)
+            destination.append(channel)
+            changed = True
+            continue
+
+        index = positions[name]
+        current = destination[index]
+        current_key = (current.get("timestamp", 0), current.get("created_by", ""))
+        received_key = (channel.get("timestamp", 0), channel.get("created_by", ""))
+        if received_key < current_key:
+            destination[index] = channel
+            changed = True
+    return changed
+
+
+def merge_replica_state(state, replica):
+    changed = False
+    changed |= merge_items(state["users"], replica.get("users", []), lambda item: item)
+    changed |= merge_items(state["logins"], replica.get("logins", []), replica_item_key)
+    changed |= merge_channels(state["channels"], replica.get("channels", []))
+    changed |= merge_items(state["messages"], replica.get("messages", []), replica_item_key)
+    changed |= merge_items(state["publications"], replica.get("publications", []), replica_item_key)
+    return changed
+
+
+def publish_replica_event(publisher, event):
+    publisher.send_multipart(
+        [b"replica_event\0", msgpack.packb(event, use_bin_type=True)]
+    )
+
+
+def request_replica_snapshot(publisher):
+    publisher.send_multipart(
+        [
+            b"replica_request\0",
+            msgpack.packb({"source": SERVER_NAME}, use_bin_type=True),
+        ]
+    )
+
+
+def receive_pub_message(subscriber, publisher, state):
     global COORDINATOR_NAME
     parts = subscriber.recv_multipart()
-    if len(parts) < 2 or parts[0] != b"servers\0":
+    if len(parts) < 2:
         return
 
     try:
-        name = msgpack.unpackb(parts[1], raw=False)
+        message = msgpack.unpackb(parts[1], raw=False)
     except (msgpack.UnpackException, ValueError):
         return
 
-    if isinstance(name, str) and name:
-        COORDINATOR_NAME = name
-        UNAVAILABLE_SERVERS.discard(name)
-        print(f"[{SERVER_NAME}] coordenador recebido: {name}", flush=True)
+    topic = parts[0]
+    if topic == b"servers\0":
+        if isinstance(message, str) and message:
+            COORDINATOR_NAME = message
+            UNAVAILABLE_SERVERS.discard(message)
+            print(f"[{SERVER_NAME}] coordenador recebido: {message}", flush=True)
+        return
+
+    if not isinstance(message, dict) or message.get("source") == SERVER_NAME:
+        return
+
+    if topic == b"replica_request\0":
+        snapshot = {"source": SERVER_NAME, "state": state}
+        publisher.send_multipart(
+            [b"replica_state\0", msgpack.packb(snapshot, use_bin_type=True)]
+        )
+    elif topic == b"replica_state\0":
+        if merge_replica_state(state, message.get("state", {})):
+            save_state(state)
+    elif topic == b"replica_event\0":
+        replica = dict(message.get("changes", {}))
+        if message.get("message"):
+            replica["messages"] = [message["message"]]
+        if merge_replica_state(state, replica):
+            save_state(state)
 
 
 def server_request(context, server_name, operation, **fields):
@@ -390,6 +476,7 @@ def main():
     ref_socket.setsockopt(zmq.LINGER, 0)
     ref_socket.setsockopt(zmq.RCVTIMEO, 3000)
     subscriber.setsockopt(zmq.SUBSCRIBE, b"servers")
+    subscriber.setsockopt(zmq.SUBSCRIBE, b"replica")
     ref_socket.connect(REF_URL)
     registration = ref_request(ref_socket, "rank")
     rank = registration["data"]["rank"]
@@ -406,48 +493,7 @@ def main():
     print(f"[{SERVER_NAME}] rank {rank}, aguardando mensagens na porta 5555", flush=True)
     received_messages = 0
 
-    try:
-        while True:
-            events = dict(poller.poll())
-            if events.get(subscriber) == zmq.POLLIN:
-                receive_coordinator(subscriber)
-            if events.get(socket) != zmq.POLLIN:
-                continue
 
-            raw_message = socket.recv()
-            request = None
-            try:
-                request = msgpack.unpackb(raw_message, raw=False)
-                if isinstance(request, dict) and isinstance(request.get("logical_clock"), int):
-                    observe_clock(request["logical_clock"])
-                print_message("recebido", request)
-                result = process_request(request, state, publisher)
-            except (msgpack.UnpackException, ValueError, TypeError) as error:
-                result = response(False, f"Mensagem invalida: {error}")
-
-            internal_request = (
-                isinstance(request, dict)
-                and request.get("op") in ("clock", "election")
-            )
-            if isinstance(request, dict) and not internal_request:
-                state["messages"].append({"request": request, "response": result})
-                save_state(state)
-            print_message("enviado", result)
-            socket.send(msgpack.packb(result, use_bin_type=True))
-
-            if not internal_request:
-                received_messages += 1
-            if not internal_request and received_messages % HEARTBEAT_INTERVAL == 0:
-                send_heartbeat(ref_socket, rank)
-                refresh_coordinator(ref_socket, publisher, announce=True)
-            if not internal_request and received_messages % SYNC_INTERVAL == 0:
-                synchronize_clock(context, ref_socket, publisher)
-    finally:
-        socket.close()
-        publisher.close()
-        subscriber.close()
-        ref_socket.close()
-        context.term()
 
 
 if __name__ == "__main__":
