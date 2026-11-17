@@ -577,7 +577,7 @@ def vExecutarServidor():
     uPoller.register(uSocketCliente, zmq.POLLIN)
     uPoller.register(uSocketPar, zmq.POLLIN)
     uPoller.register(uAssinante, zmq.POLLIN)
-    print(f"[{uNomeServidor}] rank {uRank}, conectado ao broker", flush=True)
+    print(f"[{uNomeServidor}] rank {uRank},  conectado ao broker", flush=True)
     uPedidosRecebidos = 0
 
     try:

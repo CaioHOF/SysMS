@@ -80,7 +80,7 @@ public class Cliente {
                 }
             }
         } catch (Exception uErro) {
-            System.err.println("Falha no bot: " + uErro.getMessage());
+            System.err.println("Falha no seguinte bot: " + uErro.getMessage());
             System.exit(1);
         }
     }
