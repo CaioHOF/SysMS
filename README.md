@@ -32,12 +32,3 @@ Cada servidor grava em um volume Docker próprio um arquivo JSON com usuários, 
 O servidor oferece a operação `list_messages` para recuperar publicações anteriores. O pedido precisa incluir `username`, `timestamp` e `logical_clock`; pode incluir `channel` para filtrar por canal e `offset` e `limit` para consultar uma página de até 100 mensagens. A resposta informa o total e se há mais páginas. O bot atual não consulta o histórico automaticamente.
 
 O Compose desta entrega inicia dois servidores. Para adicionar outro, é preciso incluir um serviço com nome e volume próprios. O servidor novo pede uma cópia dos dados antes de receber pedidos; se um servidor parar, os outros continuam ativos.
-
-## Pastas principais
-
-- `src/cliente`: bot em Java.
-- `src/servidor`: servidores em Python.
-- `src/broker`: broker Req/Rep.
-- `src/proxy`: proxy Pub/Sub.
-- `src/ref`: registro e ranks dos servidores.
-- `docker-compose.yaml`: configuração dos serviços e volumes.
