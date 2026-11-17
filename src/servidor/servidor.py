@@ -11,6 +11,7 @@ import zmq
 SERVER_NAME = os.getenv("SERVER_NAME", "servidor")
 DATA_FILE = Path(os.getenv("DATA_FILE", "/dados/dados.json"))
 REF_URL = os.getenv("REF_URL", "tcp://ref:5560")
+BROKER_URL = os.getenv("BROKER_URL", "tcp://broker:5556")
 PROXY_SUB_URL = os.getenv("PROXY_SUB_URL", "tcp://proxy:5558")
 LOGICAL_CLOCK = 0
 CLOCK_OFFSET = 0
@@ -127,6 +128,41 @@ def process_request(request, state, publisher):
         channels = sorted(channel["name"] for channel in state["channels"])
         return response(True, "Canais disponiveis", {"channels": channels})
 
+    if operation == "list_messages":
+        channel_name = request.get("channel")
+        messages = state["publications"]
+        if isinstance(channel_name, str):
+            messages = [
+                message for message in messages
+                if message["channel"] == channel_name
+            ]
+        messages = sorted(
+            messages,
+            key=lambda message: (
+                message.get("sent_at", message.get("timestamp", 0)),
+                message.get("event_id", ""),
+                message.get("username", ""),
+                message.get("message", ""),
+            ),
+        )
+        offset = request.get("offset", 0)
+        limit = request.get("limit", 100)
+        if not isinstance(offset, int) or offset < 0:
+            return response(False, "O offset do historico precisa ser positivo")
+        if not isinstance(limit, int) or limit < 1:
+            return response(False, "O limite do historico precisa ser positivo")
+        limit = min(limit, 100)
+        return response(
+            True,
+            "Historico de mensagens",
+            {
+                "messages": messages[offset:offset + limit],
+                "offset": offset,
+                "total": len(messages),
+                "more": offset + limit < len(messages),
+            },
+        )
+
     if operation == "create_channel":
         channel_name = request.get("channel")
         if not isinstance(channel_name, str):
@@ -226,7 +262,17 @@ def send_heartbeat(socket, rank):
 
 def announce_coordinator(publisher, name):
     publisher.send_multipart(
-        [b"servers\0", msgpack.packb(name, use_bin_type=True)]
+        [
+            b"servers\0",
+            msgpack.packb(
+                {
+                    "coordinator": name,
+                    "timestamp": timestamp(),
+                    "logical_clock": next_clock(),
+                },
+                use_bin_type=True,
+            ),
+        ]
     )
     print(f"[{SERVER_NAME}] coordenador anunciado: {name}", flush=True)
 
@@ -319,6 +365,8 @@ def merge_replica_state(state, replica):
 
 
 def publish_replica_event(publisher, event):
+    event["timestamp"] = timestamp()
+    event["logical_clock"] = next_clock()
     publisher.send_multipart(
         [b"replica_event\0", msgpack.packb(event, use_bin_type=True)]
     )
@@ -328,12 +376,19 @@ def request_replica_snapshot(publisher):
     publisher.send_multipart(
         [
             b"replica_request\0",
-            msgpack.packb({"source": SERVER_NAME}, use_bin_type=True),
+            msgpack.packb(
+                {
+                    "source": SERVER_NAME,
+                    "timestamp": timestamp(),
+                    "logical_clock": next_clock(),
+                },
+                use_bin_type=True,
+            ),
         ]
     )
 
 
-def receive_pub_message(subscriber, publisher, state):
+def receive_pub_message(subscriber, publisher, state, snapshot_sources=None):
     global COORDINATOR_NAME
     parts = subscriber.recv_multipart()
     if len(parts) < 2:
@@ -346,21 +401,33 @@ def receive_pub_message(subscriber, publisher, state):
 
     topic = parts[0]
     if topic == b"servers\0":
-        if isinstance(message, str) and message:
-            COORDINATOR_NAME = message
-            UNAVAILABLE_SERVERS.discard(message)
-            print(f"[{SERVER_NAME}] coordenador recebido: {message}", flush=True)
+        name = message.get("coordinator")
+        if isinstance(message.get("logical_clock"), int):
+            observe_clock(message["logical_clock"])
+        if isinstance(name, str) and name:
+            COORDINATOR_NAME = name
+            UNAVAILABLE_SERVERS.discard(name)
+            print(f"[{SERVER_NAME}] coordenador recebido: {name}", flush=True)
         return
 
     if not isinstance(message, dict) or message.get("source") == SERVER_NAME:
         return
+    if isinstance(message.get("logical_clock"), int):
+        observe_clock(message["logical_clock"])
 
     if topic == b"replica_request\0":
-        snapshot = {"source": SERVER_NAME, "state": state}
+        snapshot = {
+            "source": SERVER_NAME,
+            "state": state,
+            "timestamp": timestamp(),
+            "logical_clock": next_clock(),
+        }
         publisher.send_multipart(
             [b"replica_state\0", msgpack.packb(snapshot, use_bin_type=True)]
         )
     elif topic == b"replica_state\0":
+        if snapshot_sources is not None and isinstance(message.get("source"), str):
+            snapshot_sources.add(message["source"])
         if merge_replica_state(state, message.get("state", {})):
             save_state(state)
     elif topic == b"replica_event\0":
@@ -376,7 +443,7 @@ def server_request(context, server_name, operation, **fields):
     peer_socket.setsockopt(zmq.LINGER, 0)
     peer_socket.setsockopt(zmq.RCVTIMEO, 2000)
     peer_socket.setsockopt(zmq.SNDTIMEO, 2000)
-    peer_socket.connect(f"tcp://{server_name}:5555")
+    peer_socket.connect(f"tcp://{server_name}:5561")
 
     request = {
         "op": operation,
@@ -466,11 +533,13 @@ def main():
     global SERVER_RANK
     state = load_state()
     context = zmq.Context()
-    socket = context.socket(zmq.REP)
+    client_socket = context.socket(zmq.REP)
+    peer_socket = context.socket(zmq.REP)
     publisher = context.socket(zmq.PUB)
     subscriber = context.socket(zmq.SUB)
     ref_socket = context.socket(zmq.REQ)
-    socket.setsockopt(zmq.LINGER, 0)
+    client_socket.setsockopt(zmq.LINGER, 0)
+    peer_socket.setsockopt(zmq.LINGER, 0)
     publisher.setsockopt(zmq.LINGER, 0)
     subscriber.setsockopt(zmq.LINGER, 0)
     ref_socket.setsockopt(zmq.LINGER, 0)
@@ -481,16 +550,34 @@ def main():
     registration = ref_request(ref_socket, "rank")
     rank = registration["data"]["rank"]
     SERVER_RANK = rank
-    socket.bind("tcp://*:5555")
+    peer_socket.bind("tcp://*:5561")
     publisher.connect(os.getenv("PROXY_PUB_URL", "tcp://proxy:5557"))
     subscriber.connect(PROXY_SUB_URL)
     time.sleep(0.5)
     refresh_coordinator(ref_socket, publisher, announce=True)
+    request_replica_snapshot(publisher)
+    expected_sources = {
+        server["name"]
+        for server in ACTIVE_SERVERS
+        if server.get("name") != SERVER_NAME
+    }
+    snapshot_sources = set()
+    sync_started = time.monotonic()
+    sync_deadline = sync_started + 5
+    while time.monotonic() < sync_deadline:
+        minimum_wait_finished = time.monotonic() >= sync_started + 1
+        all_servers_replied = expected_sources.issubset(snapshot_sources)
+        if minimum_wait_finished and all_servers_replied:
+            break
+        if subscriber.poll(100) == zmq.POLLIN:
+            receive_pub_message(subscriber, publisher, state, snapshot_sources)
+    client_socket.connect(BROKER_URL)
 
     poller = zmq.Poller()
-    poller.register(socket, zmq.POLLIN)
+    poller.register(client_socket, zmq.POLLIN)
+    poller.register(peer_socket, zmq.POLLIN)
     poller.register(subscriber, zmq.POLLIN)
-    print(f"[{SERVER_NAME}] rank {rank}, aguardando mensagens na porta 5555", flush=True)
+    print(f"[{SERVER_NAME}] rank {rank}, conectado ao broker", flush=True)
     received_messages = 0
 
     try:
@@ -498,69 +585,72 @@ def main():
             events = dict(poller.poll())
             if events.get(subscriber) == zmq.POLLIN:
                 receive_pub_message(subscriber, publisher, state)
-            if events.get(socket) != zmq.POLLIN:
-                continue
+            for socket in (client_socket, peer_socket):
+                if events.get(socket) != zmq.POLLIN:
+                    continue
 
-            raw_message = socket.recv()
-            request = None
-            old_lengths = None
-            try:
-                request = msgpack.unpackb(raw_message, raw=False)
-                if isinstance(request, dict):
-                    old_lengths = {
-                        name: len(state[name])
+                client_request = socket is client_socket
+                raw_message = socket.recv()
+                request = None
+                old_lengths = None
+                try:
+                    request = msgpack.unpackb(raw_message, raw=False)
+                    if isinstance(request, dict):
+                        old_lengths = {
+                            name: len(state[name])
+                            for name in ("users", "logins", "channels", "publications")
+                        }
+                    if isinstance(request, dict) and isinstance(request.get("logical_clock"), int):
+                        observe_clock(request["logical_clock"])
+                    print_message("recebido", request)
+                    result = process_request(request, state, publisher)
+                except (msgpack.UnpackException, ValueError, TypeError) as error:
+                    result = response(False, f"Mensagem invalida: {error}")
+
+                internal_request = (
+                    isinstance(request, dict)
+                    and request.get("op") in ("clock", "election")
+                )
+                replication_event = None
+                if isinstance(request, dict) and not internal_request:
+                    event_id = f"{SERVER_NAME}:{uuid.uuid4().hex}"
+                    if request.get("op") == "publish" and result.get("ok"):
+                        result["data"]["event_id"] = event_id
+                        if len(state["publications"]) > old_lengths["publications"]:
+                            state["publications"][-1]["event_id"] = event_id
+
+                    message_entry = {
+                        "event_id": event_id,
+                        "request": request,
+                        "response": result,
+                    }
+                    state["messages"].append(message_entry)
+                    changes = {
+                        name: state[name][old_lengths[name]:]
                         for name in ("users", "logins", "channels", "publications")
                     }
-                if isinstance(request, dict) and isinstance(request.get("logical_clock"), int):
-                    observe_clock(request["logical_clock"])
-                print_message("recebido", request)
-                result = process_request(request, state, publisher)
-            except (msgpack.UnpackException, ValueError, TypeError) as error:
-                result = response(False, f"Mensagem invalida: {error}")
+                    replication_event = {
+                        "source": SERVER_NAME,
+                        "changes": changes,
+                        "message": message_entry,
+                    }
+                    save_state(state)
+                print_message("enviado", result)
+                socket.send(msgpack.packb(result, use_bin_type=True))
+                if replication_event is not None:
+                    publish_replica_event(publisher, replication_event)
 
-            internal_request = (
-                isinstance(request, dict)
-                and request.get("op") in ("clock", "election")
-            )
-            replication_event = None
-            if isinstance(request, dict) and not internal_request:
-                event_id = f"{SERVER_NAME}:{uuid.uuid4().hex}"
-                if request.get("op") == "publish" and result.get("ok"):
-                    result["data"]["event_id"] = event_id
-                    if len(state["publications"]) > old_lengths["publications"]:
-                        state["publications"][-1]["event_id"] = event_id
-
-                message_entry = {
-                    "event_id": event_id,
-                    "request": request,
-                    "response": result,
-                }
-                state["messages"].append(message_entry)
-                changes = {
-                    name: state[name][old_lengths[name]:]
-                    for name in ("users", "logins", "channels", "publications")
-                }
-                replication_event = {
-                    "source": SERVER_NAME,
-                    "changes": changes,
-                    "message": message_entry,
-                }
-                save_state(state)
-            print_message("enviado", result)
-            socket.send(msgpack.packb(result, use_bin_type=True))
-            if replication_event is not None:
-                publish_replica_event(publisher, replication_event)
-
-            if not internal_request:
-                received_messages += 1
-            if not internal_request and received_messages % HEARTBEAT_INTERVAL == 0:
-                send_heartbeat(ref_socket, rank)
-                refresh_coordinator(ref_socket, publisher, announce=True)
-            if not internal_request and received_messages % SYNC_INTERVAL == 0:
-                synchronize_clock(context, ref_socket, publisher)
-                request_replica_snapshot(publisher)
+                if client_request and not internal_request:
+                    received_messages += 1
+                if client_request and received_messages % HEARTBEAT_INTERVAL == 0:
+                    send_heartbeat(ref_socket, rank)
+                    refresh_coordinator(ref_socket, publisher, announce=True)
+                if client_request and received_messages % SYNC_INTERVAL == 0:
+                    synchronize_clock(context, ref_socket, publisher)
+                    request_replica_snapshot(publisher)
     finally:
-        socket.close()
+        client_socket.close()
+        peer_socket.close()
         publisher.close()
         subscriber.close()
         ref_socket.close()

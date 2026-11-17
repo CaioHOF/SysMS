@@ -26,34 +26,28 @@ public class Cliente {
 
     public static void main(String[] args) {
         String username = environment("BOT_NAME", "ana");
+        String brokerUrl = environment("BROKER_URL", "tcp://broker:5555");
         String proxyUrl = environment("PROXY_SUB_URL", "tcp://proxy:5558");
-        String[] addresses = environment("SERVER_URLS",
-                "tcp://servidor1:5555,tcp://servidor2:5555").split(",");
 
         try (ZContext context = new ZContext()) {
-            Map<String, ZMQ.Socket> servers = new LinkedHashMap<>();
             List<String> channels = new ArrayList<>();
 
-            for (String address : addresses) {
-                String endpoint = address.trim();
-                ZMQ.Socket socket = context.createSocket(SocketType.REQ);
-                socket.setLinger(0);
-                socket.setReceiveTimeOut(TIMEOUT_MS);
-                socket.setSendTimeOut(TIMEOUT_MS);
-                socket.connect(endpoint);
-                servers.put(endpoint, socket);
+            ZMQ.Socket server = context.createSocket(SocketType.REQ);
+            server.setLinger(0);
+            server.setReceiveTimeOut(TIMEOUT_MS);
+            server.setSendTimeOut(TIMEOUT_MS);
+            server.connect(brokerUrl);
 
-                request(socket, endpoint, username, "login", null, null);
-                channels = listChannels(socket, endpoint, username);
-                while (channels.size() < 5) {
-                    int number = 1;
-                    while (channels.contains("canal-" + number)) {
-                        number++;
-                    }
-                    request(socket, endpoint, username, "create_channel",
-                            "canal-" + number, null);
-                    channels = listChannels(socket, endpoint, username);
+            request(server, brokerUrl, username, "login", null, null);
+            channels = listChannels(server, brokerUrl, username);
+            while (channels.size() < 5) {
+                int number = 1;
+                while (channels.contains("canal-" + number)) {
+                    number++;
                 }
+                request(server, brokerUrl, username, "create_channel",
+                        "canal-" + number, null);
+                channels = listChannels(server, brokerUrl, username);
             }
 
             Collections.shuffle(channels, random);
@@ -69,15 +63,12 @@ public class Cliente {
             subscribed.await();
             Thread.sleep(1000);
 
-            List<Map.Entry<String, ZMQ.Socket>> serverList = new ArrayList<>(servers.entrySet());
             long counter = 1;
             while (true) {
                 for (int i = 0; i < 10; i++) {
                     String channel = channels.get(random.nextInt(channels.size()));
                     String text = "mensagem-" + random.nextInt(1000);
-                    Map.Entry<String, ZMQ.Socket> server =
-                            serverList.get(random.nextInt(serverList.size()));
-                    request(server.getValue(), server.getKey(), username,
+                    request(server, brokerUrl, username,
                             "publish", channel, text);
                     System.out.println("[" + username + "] enviada " + counter++
                             + " em #" + channel);
@@ -142,18 +133,23 @@ public class Cliente {
             ready.countDown();
 
             while (true) {
-                subscriber.recv(0); //Se der erro o problema ta aqui
+                subscriber.recv(0);
                 byte[] payload = subscriber.recv(0);
                 Map<Value, Value> publication = MessagePack.newDefaultUnpacker(payload)
                         .unpackValue().asMapValue().map();
                 long receivedClock = field(publication, "logical_clock").asIntegerValue().asLong();
                 logicalClock.updateAndGet(current -> Math.max(current, receivedClock));
                 long receivedAt = Instant.now().toEpochMilli();
-                System.out.println("[" + username + " recebeu] canal=#"
-                        + field(publication, "channel").asStringValue().asString()
+                System.out.println("[" + username + " recebeu] remetente="
+                        + field(publication, "username").asStringValue().asString()
+                        + " canal=#" + field(publication, "channel").asStringValue().asString()
                         + " mensagem=" + field(publication, "message").asStringValue().asString()
+                        + " timestamp=" + field(publication, "timestamp").asIntegerValue().asLong()
                         + " enviada=" + field(publication, "sent_at").asIntegerValue().asLong()
-                        + " recebida=" + receivedAt);
+                        + " recebida_servidor="
+                        + field(publication, "received_at").asIntegerValue().asLong()
+                        + " relogio_logico=" + receivedClock
+                        + " recebida_cliente=" + receivedAt);
             }
         } catch (Exception error) {
             System.err.println("Falha ao receber publicação: " + error.getMessage());
