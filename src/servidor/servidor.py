@@ -266,7 +266,7 @@ def vEnviarHeartbeat(uSocket, uRank):
             print(f"[{uNomeServidor}] heartbeat; rank={uRank}", flush=True)
         else:
             print(f"[{uNomeServidor}] heartbeat recusado: {uResposta.get('message')}", flush=True)
-    except (zmq.error.Again, OSError, KeyError) as uErro:
+    except (zmq.error.ZMQError, OSError, KeyError) as uErro:
         print(f"[{uNomeServidor}] falha no heartbeat: {uErro}", flush=True)
 
 # anuncia por Pub/Sub qual servidor está atuando como coordenador
@@ -307,7 +307,7 @@ def vAtualizarCoordenador(uSocketReferencia, uPublicador, uAnunciar=False):
             vtServidoresAtivos = uResposta.get("data", {}).get("servers", [])
             for uServidor in vtServidoresAtivos:
                 uServidoresConhecidos[uServidor["name"]] = uServidor["rank"]
-    except (zmq.error.Again, OSError, KeyError) as uErro:
+    except (zmq.error.ZMQError, OSError, KeyError) as uErro:
         print(f"[{uNomeServidor}] falha ao consultar servidores: {uErro}", flush=True)
 
     vtNomesAtivos = {uServidor.get("name") for uServidor in vtServidoresAtivos}
@@ -556,6 +556,9 @@ def vExecutarServidor():
     uAssinante.setsockopt(zmq.LINGER, 0)
     uSocketReferencia.setsockopt(zmq.LINGER, 0)
     uSocketReferencia.setsockopt(zmq.RCVTIMEO, 3000)
+    uSocketReferencia.setsockopt(zmq.SNDTIMEO, 3000)
+    uSocketReferencia.setsockopt(zmq.REQ_RELAXED, 1)
+    uSocketReferencia.setsockopt(zmq.REQ_CORRELATE, 1)
     uAssinante.setsockopt(zmq.SUBSCRIBE, b"servers")
     uAssinante.setsockopt(zmq.SUBSCRIBE, b"replica")
     uSocketReferencia.connect(uUrlReferencia)

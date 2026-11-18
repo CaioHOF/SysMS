@@ -29,75 +29,97 @@ public class Cliente {
         vExecutarBot();
     }
 
-    private static void vExecutarBot() {
-        // Essas tres variaveis servem para ler o ambiente e definir endereços
-        String uNomeUsuario = sLerVariavelAmbiente("BOT_NAME", "ana");
-        String uUrlBroker = sLerVariavelAmbiente("BROKER_URL", "tcp://broker:5555");
-        String uUrlProxy = sLerVariavelAmbiente("PROXY_SUB_URL", "tcp://proxy:5558");
+private static void vExecutarBot() {
+    String uNomeUsuario = sLerVariavelAmbiente("BOT_NAME", "ana");
 
-        //Cria o contexto
-        try (ZContext uContexto = new ZContext()) {
-            List<String> vtCanais = new ArrayList<>();
-
-            ZMQ.Socket uSocketServidor = uContexto.createSocket(SocketType.REQ);
-            uSocketServidor.setLinger(0);
-            uSocketServidor.setReceiveTimeOut(uTempoLimiteMs);
-            uSocketServidor.setSendTimeOut(uTempoLimiteMs);
-            uSocketServidor.connect(uUrlBroker);
-
-            //Literalmebnte envia o pedido de login do bot do ambiente
-            mEnviarPedido(uSocketServidor, uUrlBroker, uNomeUsuario, "login", null, null);
-            vtCanais = vtListarCanais(uSocketServidor, uUrlBroker, uNomeUsuario);
-
-            //continua criando até ter 5
-            while (vtCanais.size() < 5) {
-
-                //procura um nome de canal que nao exista
-                int uNumeroCanal = 1;
-                while (vtCanais.contains("canal-" + uNumeroCanal)) {
-                    uNumeroCanal++;
-                }
-
-                //cria o canal
-                mEnviarPedido(uSocketServidor, uUrlBroker, uNomeUsuario, "create_channel",
-                        "canal-" + uNumeroCanal, null);
-                vtCanais = vtListarCanais(uSocketServidor, uUrlBroker, uNomeUsuario);
-            }
-
-            //Para variair os canais escolhidos para inscrição embaralho os canais
-            Collections.shuffle(vtCanais, uAleatorio);
-            //3 canais são selecionados para receber publicações, antes eu tava selecionando 4, mas tava muito ruim 
-            List<String> vtInscricoes = new ArrayList<>(
-                    vtCanais.subList(0, Math.min(3, vtCanais.size())));
-            System.out.println("[" + uNomeUsuario + "] inscritos em: " + vtInscricoes);
-
-            CountDownLatch uAvisoInscricao = new CountDownLatch(1);
-            // cria uma thread separada para receber mensagens dos canais inscritos, se n receber a mensagem o problema ta aqui
-            Thread uThreadRecebedora = new Thread(() -> vReceberMensagens(
-                    uUrlProxy, vtInscricoes, uNomeUsuario, uAvisoInscricao));
-            uThreadRecebedora.setDaemon(true);
-            uThreadRecebedora.start();
-            uAvisoInscricao.await();
-            Thread.sleep(1000);
-
-            long uContadorMensagens = 1;
-            //mantem o funcionamento até ser encerrado
-            while (true) {
-                for (int uIndice = 0; uIndice < 10; uIndice++) {
-                    String uCanal = vtCanais.get(uAleatorio.nextInt(vtCanais.size()));
-                    String uTexto = "mensagem-" + uAleatorio.nextInt(1000);
-                    mEnviarPedido(uSocketServidor, uUrlBroker, uNomeUsuario,
-                            "publish", uCanal, uTexto);
-                    System.out.println("[" + uNomeUsuario + "] enviada " + uContadorMensagens++
-                            + " em #" + uCanal);
-                    Thread.sleep(1000);
-                }
-            }
+    while (true) {
+        try {
+            System.out.println("[" + uNomeUsuario + "] iniciando ou reconectando");
+            vExecutarSessao();
         } catch (Exception uErro) {
-            System.err.println("Falha no seguinte bot: " + uErro.getMessage());
-            System.exit(1);
+            System.err.println("[" + uNomeUsuario + "] conexão perdida: " + uErro.getMessage());
+            System.err.println("[" + uNomeUsuario + "] tentando reconectara");
+
+            try {
+                Thread.sleep(5000);
+            } catch (InterruptedException uInterrupcao) {
+                Thread.currentThread().interrupt();
+                return;
+            }
         }
     }
+}
+
+private static void vExecutarSessao() throws Exception {
+    String uNomeUsuario = sLerVariavelAmbiente("BOT_NAME", "ana");
+    String uUrlBroker = sLerVariavelAmbiente("BROKER_URL", "tcp://broker:5555");
+    String uUrlProxy = sLerVariavelAmbiente("PROXY_SUB_URL", "tcp://proxy:5558");
+
+    try (ZContext uContexto = new ZContext()) {
+        List<String> vtCanais = new ArrayList<>();
+
+        ZMQ.Socket uSocketServidor = uContexto.createSocket(SocketType.REQ);
+        uSocketServidor.setLinger(0);
+        uSocketServidor.setReceiveTimeOut(uTempoLimiteMs);
+        uSocketServidor.setSendTimeOut(uTempoLimiteMs);
+        uSocketServidor.connect(uUrlBroker);
+
+        // Login
+        mEnviarPedido(uSocketServidor, uUrlBroker, uNomeUsuario, "login", null, null);
+        vtCanais = vtListarCanais(uSocketServidor, uUrlBroker, uNomeUsuario);
+
+        // Garante a existência de pelo menos 5 canais
+        while (vtCanais.size() < 5) {
+            int uNumeroCanal = 1;
+
+            while (vtCanais.contains("canal-" + uNumeroCanal)) {
+                uNumeroCanal++;
+            }
+
+            mEnviarPedido(uSocketServidor, uUrlBroker, uNomeUsuario,
+                    "create_channel", "canal-" + uNumeroCanal, null);
+
+            vtCanais = vtListarCanais(uSocketServidor, uUrlBroker, uNomeUsuario);
+        }
+
+        // Seleciona canais para inscrição
+        Collections.shuffle(vtCanais, uAleatorio);
+
+        List<String> vtInscricoes = new ArrayList<>(
+                vtCanais.subList(0, Math.min(3, vtCanais.size())));
+
+        System.out.println("[" + uNomeUsuario + "] inscritos em: " + vtInscricoes);
+
+        CountDownLatch uAvisoInscricao = new CountDownLatch(1);
+
+        Thread uThreadRecebedora = new Thread(() -> vReceberMensagens(
+                uUrlProxy, vtInscricoes, uNomeUsuario, uAvisoInscricao));
+
+        uThreadRecebedora.setDaemon(true);
+        uThreadRecebedora.start();
+
+        uAvisoInscricao.await();
+        Thread.sleep(1000);
+
+        long uContadorMensagens = 1;
+
+        while (true) {
+            for (int uIndice = 0; uIndice < 10; uIndice++) {
+                String uCanal = vtCanais.get(uAleatorio.nextInt(vtCanais.size()));
+                String uTexto = "mensagem-" + uAleatorio.nextInt(1000);
+
+                mEnviarPedido(uSocketServidor, uUrlBroker, uNomeUsuario,
+                        "publish", uCanal, uTexto);
+
+                System.out.println("[" + uNomeUsuario + "] enviada "
+                        + uContadorMensagens++ + " em #" + uCanal);
+
+                Thread.sleep(1000);
+            }
+        }
+    }
+}
+
 
     private static List<String> vtListarCanais(
             ZMQ.Socket uSocket, String uEndereco, String uNomeUsuario) throws IOException {
