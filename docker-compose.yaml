@@ -55,6 +55,24 @@ services:
       - ref
       - broker
 
+  servidor3:
+    build:
+      context: ./src/servidor
+      dockerfile: Dockerfile
+    environment:
+      SERVER_NAME: servidor3
+      DATA_FILE: /dados/dados.json
+      BROKER_URL: tcp://broker:5556
+      PROXY_PUB_URL: tcp://proxy:5557
+      REF_URL: tcp://ref:5560
+    volumes:
+      - dados_servidor3:/dados
+    depends_on:
+      - proxy
+      - ref
+      - broker
+      
+
   cliente1:
     build:
       context: ./src/cliente
@@ -87,3 +105,4 @@ services:
 volumes:
   dados_servidor1:
   dados_servidor2:
+  dados_servidor3:
