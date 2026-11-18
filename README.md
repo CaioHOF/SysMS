@@ -6,11 +6,11 @@ Projeto de troca de mensagens em canais públicos para a disciplina de Sistemas 
 
 Com o Docker aberto, execute na pasta do projeto:
 
-```text
+```
 docker compose up --build
 ```
 
-O Compose inicia o broker, o proxy, o serviço `ref`, dois servidores e dois bots. Para encerrar, pressione `Ctrl+C` e execute `docker compose down`.
+O Compose inicia o broker, o proxy, o serviço ref, dois servidores e dois bots. Para encerrar, pressione Ctrl+C e execute docker compose down.
 
 ## Como funciona
 
@@ -23,12 +23,12 @@ Quando um bot publica, o servidor verifica se o canal existe e se o texto não e
 
 ## Servidores, relógios e dados
 
-O serviço `ref` atribui um rank a cada servidor e mantém a lista dos que estão ativos. Os servidores enviam heartbeat a cada dez pedidos de clientes; após 30 segundos sem heartbeat, o servidor deixa de aparecer como ativo.
+O serviço ref atribui um rank a cada servidor e mantém a lista dos que estão ativos. Os servidores enviam heartbeat a cada dez pedidos de clientes; após 30 segundos sem heartbeat, o servidor deixa de aparecer como ativo.
 
-O servidor ativo de maior rank é o coordenador. A cada 15 pedidos de clientes, os outros servidores sincronizam seus relógios com ele pelo algoritmo de Berkeley. Se o coordenador não responder, os servidores consultam os outros e fazem uma eleição. O resultado é divulgado pelo tópico `servers` do Pub/Sub.
+O servidor ativo de maior rank é o coordenador. A cada 15 pedidos de clientes, os outros servidores sincronizam seus relógios com ele pelo algoritmo de Berkeley. Se o coordenador não responder, os servidores consultam os outros e fazem uma eleição. O resultado é divulgado pelo tópico servers do Pub/Sub.
 
 Cada servidor grava em um volume Docker próprio um arquivo JSON com usuários, horários de login, canais, pedidos e publicações. Como o broker distribui os pedidos entre os servidores, cada um pode receber apenas parte deles. Para manter cópias dos dados, cada servidor publica eventos de replicação; um identificador evita registrar o mesmo evento mais de uma vez. Ao iniciar, um servidor pede uma cópia completa aos servidores ativos. Também há novos pedidos de cópia a cada 15 pedidos de clientes. A replicação é feita pelo Pub/Sub e pode levar um pequeno intervalo para chegar aos outros servidores.
 
-O servidor oferece a operação `list_messages` para recuperar publicações anteriores. O pedido precisa incluir `username`, `timestamp` e `logical_clock`; pode incluir `channel` para filtrar por canal e `offset` e `limit` para consultar uma página de até 100 mensagens. A resposta informa o total e se há mais páginas. O bot atual não consulta o histórico automaticamente.
+O servidor oferece a operação list_messages para recuperar publicações anteriores. O pedido precisa incluir username, timestamp e logical_clock; pode incluir channel para filtrar por canal e offset e limit para consultar uma página de até 100 mensagens. A resposta informa o total e se há mais páginas. O bot atual não consulta o histórico automaticamente.
 
 O Compose desta entrega inicia dois servidores. Para adicionar outro, é preciso incluir um serviço com nome e volume próprios. O servidor novo pede uma cópia dos dados antes de receber pedidos; se um servidor parar, os outros continuam ativos.
